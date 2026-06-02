@@ -33,7 +33,7 @@ namespace WarField
     using WE = WarFieldElements;
     using GD = GlobalDefines;
 
-    public class SoldierCtrl : MonoBehaviour
+    public class SoldierCtrl : MonoBehaviour, ITask
     {
 #region public parameters
 
@@ -50,7 +50,17 @@ namespace WarField
             public SoldierConf p_conf; //conf of state
             public IndividualData p_individual; //private data different from soldier to soldier
             public GameObject p_prefab; //soldier prefab
+            public Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> p_animClips; //solder's animation
+            public Mesh p_bakedMesh; //运行时将图片缓存空间转换为高合批网格引用,记录士兵所有动画帧中最大的8角mesh网格
+            public Material p_sharedMaterial;
+            //3种不同分辨率
+            public Texture2DArray p_hdColorArray;
+            public Texture2DArray p_mdColorArray;
+            public Texture2DArray p_ldColorArray;
 
+            public Texture2DArray p_hdNormalArray;
+            public Texture2DArray p_mdNormalArray;
+            public Texture2DArray p_ldNormalArray;
             public SoldierBasicData()
             {
                 p_isUnlocked = false;
@@ -58,6 +68,8 @@ namespace WarField
                 p_conf = null;
                 p_individual = null;
                 p_prefab = null;
+                p_animClips = new Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets>();
+                p_bakedMesh = null;
             }
         }
 
@@ -70,6 +82,9 @@ namespace WarField
             public int p_cmdOffset;
             public int p_count;
         }
+
+        [SerializeField] private SoldierAnimConfig _bakedAnimConfig;
+        private WE.LodLevel _curGlobLodLevel = WE.LodLevel.MIN;
 
         //record all the data of a soldier type
         private SoldierBasicData[,][] _soldierData; //[WE.RaceType.MAX, SD.TroopType.MAX][e.g. WE.RaceType.Human.MeleeType]
@@ -287,7 +302,6 @@ namespace WarField
 #endregion
 
 #region public functions
-
         public bool InitSoldierCtrl()
         {
             //add melee/magic/ranged pools
@@ -299,8 +313,102 @@ namespace WarField
                 }
             }
 
+            if (_bakedAnimConfig != null)
+            {
+                // 初始化离线资产的 string 字典快照
+                _bakedAnimConfig.InitializeCache();
+
+                for (int r = 1; r < (int)WE.RaceType.MAX; r++)
+                {
+                    for (int t = 1; t < (int)SD.TroopType.MAX; t++)
+                    {
+                        var array = _soldierData[r, t];
+                        if (array == null) continue;
+
+                        for (int m = 1; m < array.Length; m++)
+                        {
+                            // 确保 XML 配置已加载且槽位有效
+                            if (array[m] != null && array[m].p_conf != null)
+                            {
+                                string sName = array[m].p_conf.p_name;
+                                WE.RaceType race = array[m].p_conf.p_race;
+                                SD.TroopType troop = array[m].p_conf.p_troop;
+                                var bakedClips = _bakedAnimConfig.GetClips(sName);
+
+                                if (bakedClips != null)
+								{
+                                    array[m].p_animClips = bakedClips;
+
+                                    // 从 ScriptableObject 列表中读出对应的全量帧边界，加载进运行时内存
+                                    var sData = _bakedAnimConfig.p_allSoldiersBakedList.Find(x => x.p_sdName == sName);
+                                    var animRenderer = array[m].p_prefab.transform.Find("SoldierAnim")?.GetComponent<MeshRenderer>();
+                                    if (animRenderer != null)
+                                    {
+                                        array[m].p_sharedMaterial = animRenderer.sharedMaterial;
+                                    }
+                                    if (sData != null)
+                                    {
+                                        // 将离线烘焙网格注入运行时物理缓冲槽
+                                        array[m].p_bakedMesh = sData.p_bakedMesh;
+                                        array[m].p_hdColorArray = sData.p_hdColorArray;
+                                        array[m].p_mdColorArray = sData.p_mdColorArray;
+                                        array[m].p_ldColorArray = sData.p_ldColorArray;
+
+                                        array[m].p_hdNormalArray = sData.p_hdNormalArray;
+                                        array[m].p_mdNormalArray = sData.p_mdNormalArray;
+                                        array[m].p_ldNormalArray = sData.p_ldNormalArray;
+                                    }
+								}
+                                else
+                                {
+                                    GameLogger.LogWarning($"Can not find animation of soldier {sName}");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (int m = 1; m < _heroData.Length; m++)
+                {
+                    if (_heroData[m] != null && _heroData[m].p_conf != null)
+                    {
+                        string hName = _heroData[m].p_conf.p_name;
+                        var bakedClips = _bakedAnimConfig.GetClips(hName);
+                        if (bakedClips != null)
+                        {
+                            _heroData[m].p_animClips = bakedClips;
+							var sData = _bakedAnimConfig.p_allSoldiersBakedList.Find(x => x.p_sdName == hName);
+                            if (sData != null)
+                            {
+                                _heroData[m].p_bakedMesh = sData.p_bakedMesh;
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                GameLogger.LogError("Can not find the Golbal soldier animation config");
+            }
+
+            WarFieldGameManager.Instance.RegisterTask(this, WE.TaskType.NORMAL);
+            WarFieldGameManager.Instance.ActiveTask(this, WE.TaskType.NORMAL);
             _beInited = true;
             return true;
+        }
+
+        public void RunNormalTask(float deltaTime)
+        {
+            if (_curGlobLodLevel != CameraCtrl.Instance.gs_lodLevel)
+            {
+                _curGlobLodLevel = CameraCtrl.Instance.gs_lodLevel;
+                ApplyGlobalMaterialLodSwitch(_curGlobLodLevel); //切换分辨率
+            }
+        }
+
+        public void RunFixTask(float deltaTime)
+        {
+            throw new NotImplementedException();
         }
 
         public void WaitForMoveJobFinish()
@@ -760,21 +868,6 @@ namespace WarField
             return false;
         }
 
-        //对移动相关的数组扩容
-        private void EnsureMoveCapacity(int neededCount)
-        {
-            if (neededCount <= _moveJobCapacity)
-                return;
-
-            int newCapacity = math.max(1024, (int)math.ceilpow2(neededCount));  //翻倍扩容
-
-            if (_moveCmds.IsCreated)
-                _moveCmds.Dispose();
-
-            _moveCmds = new NativeArray<SoldierMoveCmd>(newCapacity, Allocator.Persistent);
-            _moveJobCapacity = newCapacity;
-        }
-
         public bool UserManipulateHero(int src, Vector2 targetPos)
         {
             if (_beInited == false)
@@ -820,6 +913,33 @@ namespace WarField
             {
                 notify.SoldierDieIntf(st.faction, st.troop, st.sd);
             }, state);
+        }
+
+        //查询帧动画
+        public Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> GetSoldierAnimClips(WE.RaceType race, SD.TroopType troopT, int soldierT)
+        {
+            var array = _soldierData[(int)race, (int)troopT];
+            if (array == null || soldierT >= array.Length || array[soldierT] == null)
+                return null;
+            return array[soldierT].p_animClips;
+        }
+
+        //查询uv包围盒
+        public Mesh GetSoldierBakedMesh(WE.RaceType race, SD.TroopType troopT, int soldierT, bool isHero)
+        {
+            if (isHero)
+            {
+                if (soldierT >= 0 && soldierT < _heroData.Length && _heroData[soldierT] != null)
+                    return _heroData[soldierT].p_bakedMesh;
+                return null;
+            }
+            else
+            {
+                var array = _soldierData[(int)race, (int)troopT];
+                if (array == null || soldierT >= array.Length || array[soldierT] == null)
+                    return null;
+                return array[soldierT].p_bakedMesh;
+            }
         }
 #endregion
 
@@ -1400,6 +1520,86 @@ namespace WarField
             }
         }
 
+        //对移动相关的数组扩容
+        private void EnsureMoveCapacity(int neededCount)
+        {
+            if (neededCount <= _moveJobCapacity)
+                return;
+
+            int newCapacity = math.max(1024, (int)math.ceilpow2(neededCount));  //翻倍扩容
+
+            if (_moveCmds.IsCreated)
+                _moveCmds.Dispose();
+
+            _moveCmds = new NativeArray<SoldierMoveCmd>(newCapacity, Allocator.Persistent);
+            _moveJobCapacity = newCapacity;
+        }
+
+        //切换分辨率
+        private void ApplyGlobalMaterialLodSwitch(WE.LodLevel newLod)
+        {
+            // 遍历所有人族、怪物、中立生物的所有兵种配置
+            for (int r = 1; r < (int)WE.RaceType.MAX; r++)
+            {
+                for (int t = 1; t < (int)SD.TroopType.MAX; t++)
+                {
+                    var array = _soldierData[r, t];
+                    if (array == null) continue;
+
+                    for (int m = 1; m < array.Length; m++)
+                    {
+                        if (array[m] != null && array[m].p_sharedMaterial != null)
+                        {
+                            SwitchMaterialTextureArray(array[m], newLod);
+                        }
+                    }
+                }
+            }
+
+            // 遍历所有英雄
+            for (int m = 1; m < _heroData.Length; m++)
+            {
+                if (_heroData[m] != null && _heroData[m].p_sharedMaterial != null)
+                {
+                    SwitchMaterialTextureArray(_heroData[m], newLod);
+                }
+            }
+        }
+
+        private void SwitchMaterialTextureArray(SoldierBasicData data, WE.LodLevel lod)
+        {
+            Texture2DArray targetColor = data.p_hdColorArray;
+            Texture2DArray targetNormal = data.p_hdNormalArray;
+
+            switch (lod)
+            {
+                case WE.LodLevel.HD:
+                    if (data.p_hdColorArray != null)
+                        targetColor = data.p_hdColorArray;
+                    if (data.p_hdNormalArray != null)
+                        targetNormal = data.p_hdNormalArray;
+                    break;
+                case WE.LodLevel.MD:
+                    if (data.p_mdColorArray != null)
+                        targetColor = data.p_mdColorArray;
+                    if (data.p_mdNormalArray != null)
+                        targetNormal = data.p_mdNormalArray;
+                    break;
+                case WE.LodLevel.LD:
+                    if (data.p_ldColorArray != null)
+                        targetColor = data.p_ldColorArray;
+                    if (data.p_ldNormalArray != null)
+                        targetNormal = data.p_ldNormalArray;
+                    break;
+            }
+
+            // 瞬间改写材质球属性。由于全场同类士兵使用同一个 sharedMaterial，
+            // 这一次 SetTexture 会让全场几千个小兵在这一帧同时切换到低分辨率贴图，Draw Call 稳稳保持为 1！
+            if (targetColor != null)
+                data.p_sharedMaterial.SetTexture("_MainTexArray", targetColor);
+            if (targetNormal != null)
+                data.p_sharedMaterial.SetTexture("_NormalTexArray", targetNormal);
+        }
 #endregion
     }
 }

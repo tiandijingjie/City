@@ -73,6 +73,16 @@ namespace WarField
             MAX,
         }
 
+        //根据camera的高度 显示不同分辨率的图片
+        public enum LodLevel
+        {
+            MIN = 0,
+            HD , // 高清 512
+            MD, // 中清 256
+            LD,  // 低清 128
+            MAX,
+        }
+
         //the max damage of one attack can achieve
         static public int MaxDamage = 0x7FFFFFFF; // The damage make sure to skill every kind of soldier
         static public byte OnGroundMapIndex = 0;

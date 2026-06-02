@@ -9,7 +9,6 @@ namespace WarField
     using UD = UIDefines;
     using WE = WarFieldElements;
 
-    // 🔥 扩展接口：实现 IoObserverIntf 消费方向键事件，实现 IoGroupChangeIntf 顺从 UiIoTask 的独占启闭控制
     public class CameraCtrl : MonoBehaviour, IoObserverIntf, IoGroupChangeIntf
     {
 #region public parameters
@@ -21,6 +20,7 @@ namespace WarField
         [SerializeField] private float _moveSpeed = 20f;              // 相机方向键平移速度
         [SerializeField] private float _zoomSpeed = 4f;              // 滚轮缩放感应灵敏度
         [SerializeField] private float _minOrthographicSize = 3f;    // 允许拉得最近的视野极限（防无限趋近0或反转）
+        [SerializeField] private WE.LodLevel _curLodLvl; //现在显示的图片的分辨率等级
 
         private bool _isRotate;
         private float _rotateTime = 0.2f;
@@ -37,6 +37,11 @@ namespace WarField
         public byte gs_curMapId
         {
             get { return _curMapId; }
+        }
+
+        public WE.LodLevel gs_lodLevel
+        {
+            get { return _curLodLvl; }
         }
 #endregion
 
@@ -66,6 +71,8 @@ namespace WarField
                 float width = height * _mainCamera.aspect;
                 _mainCamera.transform.position = new Vector3(width / 2f, 0f, _mainCamera.transform.position.z);
             }
+
+            _curLodLvl = WE.LodLevel.MIN;
         }
 
         private void LateUpdate()
@@ -78,7 +85,7 @@ namespace WarField
             float scrollDelta = Input.GetAxis("Mouse ScrollWheel");
             if (Mathf.Abs(scrollDelta) > 0.001f)
             {
-                HandleCameraZoom(scrollDelta);
+                HandleCameraZoom(scrollDelta); //缩放屏幕
             }
 
             // 方向键平移
@@ -105,6 +112,7 @@ namespace WarField
             // 监听IO抢占的情况,如果IO被抢占就不能够移动或者缩放camera
             UiIoTask.Instance.RegisterGroupStatusListener(UD.UIEventGroupType.CAMERA, this);
             _isIoEnabled = true;
+            HandleCameraZoom(0);
         }
 
         public Camera CreateCamera(string camName, Vector2 pos, bool enable, Transform parent, RenderTexture targetTex = null)
@@ -189,7 +197,8 @@ namespace WarField
         private void HandleCameraZoom(float scroll)
         {
             PathFinderMap pathMap = WarMapCtrl.Instance.GetPathFinderMapByIndex(_curMapId);
-            if (pathMap == null) return;
+            if (pathMap == null)
+                return;
 
             Bounds mapBounds = pathMap.gs_bounds;
 
@@ -206,6 +215,14 @@ namespace WarField
 
             newSize = Mathf.Min(newSize, absoluteMaxSize);
             _mainCamera.orthographicSize = newSize;
+
+            // 全局驱动：根据相机高度强行切分三档视口，不存在远近混显
+            if (newSize < 15.0f)
+                _curLodLvl = WE.LodLevel.HD;
+            else if (newSize < 24.0f)
+                _curLodLvl = WE.LodLevel.MD;
+            else
+                _curLodLvl = WE.LodLevel.LD;
 
             // 缩放由于改变了视廊的宽高半径，边缘可能瞬间发生穿帮，必须立刻重新对齐物理夹逼
             ClampCameraInBounds(mapBounds);

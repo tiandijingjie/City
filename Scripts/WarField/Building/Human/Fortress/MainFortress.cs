@@ -48,12 +48,12 @@ namespace WarField
             float seedY = UnityEngine.Random.Range(-0.6f, -0.1f);
             float seedX = UnityEngine.Random.Range(-0.3f, 0.3f);
             Vector2 pos = new Vector2(_transform.position.x + seedX + 10, _transform.position.y + seedY);
-            Hero hero = SoldierCtrl.Instance.AddHeroAt(_heroType, pos, _mapId, _skillType, _talents);
-            if (hero == null)
-            {
-                GameLogger.LogError("Fail to load hero");
-                return;
-            }
+            // Hero hero = SoldierCtrl.Instance.AddHeroAt(_heroType, pos, _mapId, _skillType, _talents);
+            // if (hero == null)
+            // {
+            //     GameLogger.LogError("Fail to load hero");
+            //     return;
+            // }
         }
 
 #endregion

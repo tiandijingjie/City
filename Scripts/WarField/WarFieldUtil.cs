@@ -15,8 +15,8 @@ namespace WarField
         //mapBaseY： 所在地图的下边界的y，防止y的绝对值过大 (计算方式决定了map的高度不能超过1000，因为camera只能拍摄1000以内的z)
         static public float GetZByY(float y, float mapBaseY)
         {
-            int z = (int)((y - mapBaseY) * 100);
-            return z * 0.01f; //限制z的最小距离是0.01
+            // 如果大地图纵向高度 Y 是 1000 米，整个战场的 Z 轴物理厚度就是 0 ~ 10 米
+            return (y - mapBaseY) * 0.01f;
         }
 
         static public WE.WarEleType GetWarEleType(string tag)

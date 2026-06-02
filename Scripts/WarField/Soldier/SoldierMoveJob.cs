@@ -86,7 +86,7 @@ namespace WarField
     [BurstCompile(CompileSynchronously = true)]
     public static class SoldierMovePhysics
     {
-        public static float2 ComputeAutoDriveDir(in SoldierMoveCmd cmd, float2 baseDriveDir, in SoldierMoveFlowContext flow)
+       public static float2 ComputeAutoDriveDir(in SoldierMoveCmd cmd, float2 baseDriveDir, in SoldierMoveFlowContext flow)
         {
             if (cmd.p_status != (byte)SD.SoldierStatus.MOVE)
                 return float2.zero;
@@ -145,7 +145,7 @@ namespace WarField
                     int stepY = (int)math.sign(deltaY);
                     int nextR = cellR + stepY;
 
-                    // ====== 核心规则 1：方向上的紧邻下一个格子是障碍物，直接一刀切，不计算回归力 ======
+                    //方向上的紧邻下一个格子是障碍物不计算回归力
                     bool immediateObstacle = false;
                     if (nextR < 0 || nextR >= flow.p_flowRows)
                     {
@@ -169,7 +169,7 @@ namespace WarField
                         float totalPathResistance = 0f;
                         int currentCheckR = nextR;
 
-                        // ====== 核心规则 2：沿垂直路径累加计算直到 homeY 格子的综合阻力 ======
+                        //沿垂直路径累加计算直到 homeY 格子的综合阻力
                         while (true)
                         {
                             int checkIndex = cmd.p_flowIndex * totalCells + currentCheckR * flow.p_flowCols + cellC;
@@ -210,7 +210,7 @@ namespace WarField
                 }
             }
 
-            // ====== 核心规则 3：流场垂直偏角接近或超过 45 度（极速变轨）时的最高指挥权支配 ======
+            // 流场垂直偏角接近或超过 45 度（极速变轨）
             // 引入 -0.05f 容差，完美捕捉 45 度对角线（如 (-0.707, -0.707)）及以上的所有偏转倾向
             if (math.abs(flowDir.y) >= math.abs(flowDir.x) - 0.05f)
             {
@@ -335,6 +335,7 @@ namespace WarField
             float3 nextPos = new float3(cmd.p_currentPos.x + finalMove.x, cmd.p_currentPos.y + finalMove.y, 0);
             nextPos.x = math.clamp(nextPos.x, flow.p_flowMapOrigin.x, flow.p_flowMapMax.x);
             nextPos.y = math.clamp(nextPos.y, flow.p_flowMapOrigin.y, flow.p_flowMapMax.y);
+            nextPos.z = WarFieldUtil.GetZByY(nextPos.y, flow.p_flowMapOrigin.y); //将Y映射到z
             return nextPos;
         }
 

@@ -35,8 +35,8 @@ public class CardTest : MonoBehaviour, IWarResListener
         // SoldierCtrl.Instance.gs_curHero.TriggerActiveSkill("Frost Arrow");
         // Debug.Log("CardTest ");
 
-        WarFieldBagSystem.Instance.ReceiveProp(PD.PropType.LANDMINE);
-        Prop prop = WarFieldBagSystem.Instance.GetPropFromBag(PD.PropType.LANDMINE);
+        WarFieldBagSystem.Instance.ReceiveProp(PD.PropType.AMPLIFIER);
+        Prop prop = WarFieldBagSystem.Instance.GetPropFromBag(PD.PropType.AMPLIFIER);
         //prop.UseProp();
     }
 

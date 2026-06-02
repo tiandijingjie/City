@@ -155,11 +155,11 @@ namespace WarField
                 EffectBase effect = EffectCtrl.Instance.AddEffectAt(_transform.position, ED.EffectType.TRANSPORTOUT, _mapId); //播放传送完成特效
                 effect.AddMainEffectFinishCb(this);
 
-                iTween.ScaleTo(_sdAnimator.gameObject, iTween.Hash(
-                    "scale", Vector3.one,
-                    "time", 0.3f,
-                    "delay", 0.25f
-                ));
+                // iTween.ScaleTo(_sdAnimator.gameObject, iTween.Hash(
+                //     "scale", Vector3.one,
+                //     "time", 0.3f,
+                //     "delay", 0.25f
+                // ));
             }
             else if (_transportStage == SD.TransportStage.OUT)
             {
@@ -180,10 +180,10 @@ namespace WarField
             EffectBase effect = EffectCtrl.Instance.AddEffectAt(_transform.position, ED.EffectType.TRANSPORTIN, _mapId);
             effect.AddMainEffectFinishCb(this);
 
-            iTween.ScaleTo(_sdAnimator.gameObject, iTween.Hash(
-                "scale", Vector3.one * 0.01f,
-                "time", 0.3f
-            ));
+            // iTween.ScaleTo(_sdAnimator.gameObject, iTween.Hash(
+            //     "scale", Vector3.one * 0.01f,
+            //     "time", 0.3f
+            // ));
         }
 
         public override float GetHomeYMul()

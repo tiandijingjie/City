@@ -1,9 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using Spine;
 using UnityEngine;
-using Spine.Unity;
 using Unity.Collections;
 using Unity.Mathematics;
 
@@ -102,15 +100,21 @@ namespace WarField
         protected List<Buff> _deactiveBuffList;
 
         //animation
-        protected bool _hasAnimator = false; //有些特殊的soldier没有动画
-        protected SkeletonAnimation _sdAnimator;
-        protected MeshRenderer _sdAnimRender; //to set render order in layer by y
-        protected Dictionary<string, SD.SoldierAnimType> _animName2TypeDic; //anim name -> SD.SoldierAnimType
-        protected Dictionary<SD.SoldierAnimType, List<string>> _animType2NameDic; //SD.SoldierAnimType -> anim name list (a type animation may has several anmiations)
-        protected SD.SoldierAnimType _nextAnimType; //the animation want to play next, _playAnimType==MIN means the animation has finished or for loop anim means finished at lease one loop
+        // 在texture2dArray中寻址所需的当前播放的帧动画
+        protected int _currentDirIndex = 0; //帧动画的方向
+        protected int _currentFrameIndex = 0;
+        protected float _frameTimer = 0f;
+        protected int _lastTriggeredFrame = -1; //防止同一步内重复触发关键帧事件
+        protected Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> _animClipConfigDic;  //anim Id-> animation detail
         protected SD.SoldierAnimType _curAnimType; //the animation is playing now
         protected Skill _skillInAnim; //point to the skill of the animation is playing, call SkillAnimFinish
         protected bool[] _hasAnim; //does character has SD.SoldierAnimType animation
+        protected MeshRenderer _animRenderer;  //anim mesh render
+        protected MeshFilter _animMeshFilter; //mesh filter
+        protected MaterialPropertyBlock _animMpb; //anim meterial
+
+        // 所有序列帧的边界,用于在动画shdaer中裁剪掉序列帧中透明部分
+        protected List<Vector4> _bakedUVBoundsList;
 
         //half of soldier body size, used for calculate the bullect shoot out  position
         protected Vector2 _halfBodySize;
@@ -122,7 +126,7 @@ namespace WarField
 
         // 指令驱动移动
         protected SD.MoveCmd _curMoveCmd = SD.MoveCmd.MIN, _prvMoveCmd = SD.MoveCmd.MIN;
-        protected Vector2 _cmdTargetPos; // 指令目标坐标或方向
+        protected Vector2 _cmdTargetPos = GD.InvalidVector2; // 指令目标坐标或方向
 
         //map
         protected Vector2 _mapBase; //所处map的左下角坐标
@@ -156,6 +160,13 @@ namespace WarField
 
         protected Vector2 _lastFramePos;          // 记录上一帧的绝对坐标，用于每帧动能比对
         protected float _arrivalStuckTimer = 0f;  // 毫秒级微观拥挤计时器
+
+        // 单帧位移向量的指数滑动平均(EMA), 仅用于动画朝向选择.
+        // SoldierMoveJob 在障碍物边缘会产出 "撞墙→切线投影→反弹→再撞墙" 的高频方向翻转,
+        // 单帧 actualMove 角度差可达 180°, 任何静态阈值/角度滞回都拦不住. 用 EMA 做时间维度低通,
+        // 撞墙时正负位移自动相消, EMA 量级会塌到阈值之下, 直接锁住朝向避免贴图换面闪动.
+        protected Vector2 _animMoveDirEMA = Vector2.zero;
+
 #endregion
 
 #region private parameters' get set
@@ -268,12 +279,12 @@ namespace WarField
             _needBindMiniMap = true;
             _warEleType = WE.WarEleType.SOLDIER;
             _moveSpeed = Vector3.zero;
-            _sdAnimator = _transform.Find("SoldierAnim")?.GetComponent<SkeletonAnimation>();
-            if (_sdAnimator != null)
-            {
-                _hasAnimator = true;
-                _sdAnimRender = _sdAnimator?.GetComponent<MeshRenderer>();
-            }
+
+            Transform animTransform = transform.Find("SoldierAnim");
+            _animRenderer = animTransform.GetComponent<MeshRenderer>();
+            _animMeshFilter = animTransform.GetComponent<MeshFilter>();
+            _animMpb = new MaterialPropertyBlock();
+            _animRenderer.sortingLayerName = "Element";//设置Sorting Layer,因为meshrender 在Inspector中没有这个选项
 
             _halfBodySize = new Vector2(0.5f, 0.5f);
 
@@ -289,16 +300,7 @@ namespace WarField
             _nextAttackInterval = 1; //>0 make sure can call AttackPre() when status change
             _sdConfBeInit = false;
 
-            _animName2TypeDic = new Dictionary<string, SD.SoldierAnimType>();
-            _animName2TypeDic["Idle"] = SD.SoldierAnimType.IDLE;
-            _animName2TypeDic["Move"] = SD.SoldierAnimType.MOVE;
-            _animName2TypeDic["Attack"] = SD.SoldierAnimType.ATTACK;
-            _animName2TypeDic["Skill"] = SD.SoldierAnimType.SKILL;
-            _animName2TypeDic["Die"] = SD.SoldierAnimType.DIE;
-            _animName2TypeDic["Stun"] = SD.SoldierAnimType.STUN;
-            _animName2TypeDic["Born"] = SD.SoldierAnimType.BORN;
-
-            _animType2NameDic = new Dictionary<SD.SoldierAnimType, List<string>>();
+            _hasAnim = new bool[(int)SD.SoldierAnimType.MAX];
 
             //rival searcher
             _rivalSearcher = new SearchClosest(-1, OnClosestRivalFound, GetSearchShape, this, -1);
@@ -354,59 +356,9 @@ namespace WarField
             _buffsInEffect = new List<SoldierBuff>[(int)BFD.BuffTriggerType.MAX];
             _deactiveBuffList = new List<Buff>();
             for (int i = 1; i < (int)BFD.BuffTriggerType.MAX; i++)
-            {
-                _buffsInEffect[i] = new List<SoldierBuff>();
-            }
+				_buffsInEffect[i] = new List<SoldierBuff>();
 
-            _hasAnim = new bool[(int)SD.SoldierAnimType.MAX];
-            for (int i = 0; i < (int)SD.SoldierAnimType.MAX; i++)
-                _hasAnim[i] = false;
-
-            if (_hasAnimator == true)
-            {
-                _sdAnimator.AnimationState.Event += OnAnimationNotification;
-                var skeletonData = _sdAnimator.Skeleton.Data;
-                var animations = skeletonData.Animations;
-                foreach (var anim in animations)
-                {
-                    SD.SoldierAnimType animType = SD.SoldierAnimType.MIN;
-                    foreach (var key in _animName2TypeDic.Keys) //先精确匹配
-                    {
-                        if (anim.Name == key)
-                        {
-                            animType = _animName2TypeDic[key];
-                            break;
-                        }
-                    }
-
-                    if (animType == SD.SoldierAnimType.MIN) //同一type的多个anim进行匹配
-                    {
-                        foreach (var key in _animName2TypeDic.Keys) //部分匹配 （e.g.  Attack2）
-                        {
-                            if (anim.Name.StartsWith(key))
-                            {
-                                animType = _animName2TypeDic[key];
-                                break;
-                            }
-                        }
-                    }
-
-                    if (animType != SD.SoldierAnimType.MIN)
-                    {
-                        if (_animType2NameDic.ContainsKey(animType) == false)
-                        {
-                            _animType2NameDic[animType] = new List<string>();
-                            _hasAnim[(int)animType] = true;
-                        }
-
-                        _animType2NameDic[animType].Add(anim.Name);
-                    }
-                    else
-                        GameLogger.LogWarning($"{_sdName}: Find unknown anim with name {anim.Name}");
-                }
-            }
-
-            //state change
+            // state change
             _stateLockArray = new object[(int)SD.StateSoldierEffectType.MAX];
             _stateChangeArray = new List<SoldierStateChange>[(int)SD.StateSoldierEffectType.MAX];
             for (int i = 0; i < (int)SD.StateSoldierEffectType.MAX; i++)
@@ -434,61 +386,61 @@ namespace WarField
             // Gizmos.color = Color.red;
             // Gizmos.DrawWireSphere(realCenter, _curState.p_attackRange);
 
-            if (_cmdTargetPos != GD.InvalidVector2)
-            {
-                // 将 Vector2 包装成当前层级的 Vector3 坐标
-                Vector3 target3D = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
+            // if (_cmdTargetPos != GD.InvalidVector2) //绘制目标位置
+            // {
+            //     // 将 Vector2 包装成当前层级的 Vector3 坐标
+            //     Vector3 target3D = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
+            //
+            //     //在点击处画一个红色的实心中心定位球
+            //     Gizmos.color = Color.red;
+            //     Gizmos.DrawSphere(target3D, 0.22f);
+            //
+            //     //外围追加一个大圆环，防止视角拉得太高时看不清
+            //     Gizmos.DrawWireSphere(target3D, 0.5f);
+            //
+            //     //画一个标志性的 Rts 红十字准心线，彻底钉死世界坐标
+            //     Gizmos.DrawLine(target3D + Vector3.left * 1.0f, target3D + Vector3.right * 1.0f);
+            //     Gizmos.DrawLine(target3D + Vector3.down * 1.0f, target3D + Vector3.up * 1.0f);
+            //
+            //     // 从当前位置拉一条紫色的激光牵引线连接到目标点，明确当前单位正在对齐哪个指令
+            //     Gizmos.color = Color.magenta;
+            //     Gizmos.DrawLine(transform.position, target3D);
+            // }
 
-                // A. 在点击处画一个红色的实心中心定位球
-                Gizmos.color = Color.red;
-                Gizmos.DrawSphere(target3D, 0.22f);
-
-                // B. 外围追加一个大圆环，防止视角拉得太高时看不清
-                Gizmos.DrawWireSphere(target3D, 0.5f);
-
-                // C. 画一个标志性的 Rts 红十字准心线，彻底钉死世界坐标
-                Gizmos.DrawLine(target3D + Vector3.left * 1.0f, target3D + Vector3.right * 1.0f);
-                Gizmos.DrawLine(target3D + Vector3.down * 1.0f, target3D + Vector3.up * 1.0f);
-
-                // D. 从英雄当前位置拉一条紫色的激光牵引线连接到目标点，明确当前单位正在对齐哪个指令
-                Gizmos.color = Color.magenta;
-                Gizmos.DrawLine(transform.position, target3D);
-            }
-
-            if (_aStarWaypoints != null && _aStarWaypoints.Count > 0)
-            {
-                // 用绿色绘制路径主干线段
-                Gizmos.color = Color.green;
-
-                // 绘制从当前位置到下一个拐弯点的连线
-                if (_currentWaypointIndex < _aStarWaypoints.Count)
-                {
-                    Vector3 currentPos = transform.position;
-                    Vector3 nextWaypoint = new Vector3(_aStarWaypoints[_currentWaypointIndex].x, _aStarWaypoints[_currentWaypointIndex].y, currentPos.z);
-                    Gizmos.DrawLine(currentPos, nextWaypoint);
-                }
-
-                // 依次绘制后续各拐弯点之间的连线
-                for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count - 1; i++)
-                {
-                    Vector3 startNode = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
-                    Vector3 endNode = new Vector3(_aStarWaypoints[i + 1].x, _aStarWaypoints[i + 1].y, transform.position.z);
-                    Gizmos.DrawLine(startNode, endNode);
-                }
-
-                // 用黄色高亮球体标记所有尚未踩完的路径节点（路标点）
-                Gizmos.color = Color.yellow;
-                for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count; i++)
-                {
-                    Vector3 waypointPos = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
-                    Gizmos.DrawSphere(waypointPos, 0.15f); // 0.15半径的小球
-                }
-
-                // 用红球单独标出 A* 终点
-                Gizmos.color = Color.red;
-                Vector3 finalTargetPos = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
-                Gizmos.DrawSphere(finalTargetPos, 0.22f);
-            }
+            // if (_aStarWaypoints != null && _aStarWaypoints.Count > 0)
+            // {
+            //     // 用绿色绘制路径主干线段
+            //     Gizmos.color = Color.green;
+            //
+            //     // 绘制从当前位置到下一个拐弯点的连线
+            //     if (_currentWaypointIndex < _aStarWaypoints.Count)
+            //     {
+            //         Vector3 currentPos = transform.position;
+            //         Vector3 nextWaypoint = new Vector3(_aStarWaypoints[_currentWaypointIndex].x, _aStarWaypoints[_currentWaypointIndex].y, currentPos.z);
+            //         Gizmos.DrawLine(currentPos, nextWaypoint);
+            //     }
+            //
+            //     // 依次绘制后续各拐弯点之间的连线
+            //     for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count - 1; i++)
+            //     {
+            //         Vector3 startNode = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
+            //         Vector3 endNode = new Vector3(_aStarWaypoints[i + 1].x, _aStarWaypoints[i + 1].y, transform.position.z);
+            //         Gizmos.DrawLine(startNode, endNode);
+            //     }
+            //
+            //     // 用黄色高亮球体标记所有尚未踩完的路径节点（路标点）
+            //     Gizmos.color = Color.yellow;
+            //     for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count; i++)
+            //     {
+            //         Vector3 waypointPos = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
+            //         Gizmos.DrawSphere(waypointPos, 0.15f); // 0.15半径的小球
+            //     }
+            //
+            //     // 用红球单独标出 A* 终点
+            //     Gizmos.color = Color.red;
+            //     Vector3 finalTargetPos = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
+            //     Gizmos.DrawSphere(finalTargetPos, 0.22f);
+            // }
         }
 
         protected virtual void OnDrawGizmosSelected()
@@ -531,7 +483,7 @@ namespace WarField
             _desiredMoveDir = Vector2.zero; // 每帧默认静止，只有进入 MOVE 且有方向时才赋值
             try
             {
-                // 黑名单倒计时
+                // 敌人黑名单倒计时
                 for (int i = _blacklistedRivals.Count - 1; i >= 0; i--)
                 {
                     var entry = _blacklistedRivals[i];
@@ -588,6 +540,7 @@ namespace WarField
 
                 //check animation
                 CheckAnimation();
+                UpdateFrameAnimation(deltaTime);
 
                 //do someting in the every status
                 if (OnUpdateStatus() == true)
@@ -607,10 +560,8 @@ namespace WarField
                         }
                         else
                         {
-                            if (_animType2NameDic.ContainsKey(SD.SoldierAnimType.BORN) && _animType2NameDic[SD.SoldierAnimType.BORN].Count > 0)
-                            {
+                            if (_animClipConfigDic.ContainsKey(SD.SoldierAnimType.BORN) == true)
                                 return; //not check buff or update skill
-                            }
 
                             _isBorned = true;
                         }
@@ -808,6 +759,24 @@ namespace WarField
 
             _curPhyResistance = SD.GetPhysicsResistance(_curState.p_phyArmor);
 
+            _animClipConfigDic = SoldierCtrl.Instance.GetSoldierAnimClips(_race, gs_troopType, gs_sdType);
+            //赋值backed mesh
+            Mesh bakedMesh = SoldierCtrl.Instance.GetSoldierBakedMesh(_race, gs_troopType, gs_sdType, _isHero);
+            if (bakedMesh != null)
+                _animMeshFilter.sharedMesh = bakedMesh;
+
+            _hasAnim = new bool[(int)SD.SoldierAnimType.MAX];
+            if (_animClipConfigDic != null)
+            {
+                foreach (SD.SoldierAnimType type in Enum.GetValues(typeof(SD.SoldierAnimType)))
+                {
+                    if (_animClipConfigDic.ContainsKey(type) == true)
+                        _hasAnim[(int)type] = true;
+                }
+            }
+            else
+                GameLogger.LogError($"{gameObject.name}: Fail to get the animation data");
+
             _nextAttackInterval = 0;
             _oriAttackInterval = SD.GetAttackInterval(_curState.p_attackSpeed);
 
@@ -819,7 +788,6 @@ namespace WarField
             gameObject.name = _sdName + "_" + ((int)_faction).ToString() + "_" + WE.GetSdIndex(_faction).ToString();
             gameObject.SetActive(true);
 
-            _nextAnimType = SD.SoldierAnimType.MIN;
             _curAnimType = SD.SoldierAnimType.MIN;
             _curMoveCmd = SD.MoveCmd.MIN;
 
@@ -830,9 +798,11 @@ namespace WarField
             _currentWaypointIndex = 0;
             _lastFramePos = _transform.position;
             _arrivalStuckTimer = 0f; // 重置敏捷计时器
+            _animMoveDirEMA = Vector2.zero; // 复位动画方向滤波器, 防止从池子里复用时拿到上次的残留方向
 
             _mapBase = WarMapCtrl.Instance.GetMapByIndex(mapId).gs_passablePart.min;
             _entityData.p_position = (Vector2)_transform.position;
+            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapBase.y));
             ChangeSearchStatus(false); //先关闭索敌
             _rivalSearcher.p_mapId = mapId;
             SearchManager.Instance.UnregisterSearch(_rivalSearcher);
@@ -859,9 +829,7 @@ namespace WarField
                 {
                     var rivalScript = _blacklistedRivals[i].p_rival.GetComponent<WarEleParent>();
                     if (rivalScript != null && rivalScript.gs_gridIndex >= 0)
-                    {
                         excludeList.Add(rivalScript.gs_gridIndex);
-                    }
                 }
             }
         }
@@ -991,8 +959,6 @@ namespace WarField
                 }
             }
 
-            if (damage <= 0)
-                return false;
 
             float hit = damage * (1 - _curPhyResistance);
             hitValue = _curState.p_health; //maybe _curState.p_health < hit then actually damage is _curState.p_health
@@ -1146,7 +1112,6 @@ namespace WarField
                         if (_curState.p_attackSpeed < 0)
                             _curState.p_attackSpeed = 0.001f;
                         _oriAttackInterval = SD.GetAttackInterval(_curState.p_attackSpeed);
-                        SetAnimationPlaySpeed();
                         OnStateChanged(stateType, oriValue, _curState.p_attackSpeed);
                         break;
                     case SD.StateSoldierEffectType.MOVESPEED:
@@ -1157,7 +1122,6 @@ namespace WarField
                         if (_curState.p_moveSpeed < 0)
                             _curState.p_moveSpeed = 0f;
                         _moveSpeed = Utils.FastNormalized(_moveSpeed) * (_curState.p_moveSpeed * Time.fixedDeltaTime);
-                        SetAnimationPlaySpeed();
                         OnStateChanged(stateType, oriValue, _curState.p_moveSpeed);
                         break;
                     case SD.StateSoldierEffectType.PHYARMOR:
@@ -1186,31 +1150,14 @@ namespace WarField
                         change.p_prvState = oriValue;
                         _stateChangeArray[(int)stateType].Add(change);
                         value = Utils.CalDeltaValue(oriValue, value, calType);
-                        if (value < 0) //Hide
+                        _curState.p_bodyHide = value < 0;
+
+                        //使用 MaterialPropertyBlock 控制隐身 Alpha 传递给 Shader
+                        if (_animRenderer != null)
                         {
-                            if (_curState.p_bodyHide == false)
-                            {
-                                _curState.p_bodyHide = true;
-                                if (_hasAnimator == true)
-                                {
-                                    Color color = _sdAnimator.skeleton.GetColor();
-                                    color.a = 0.5f;
-                                    _sdAnimator.skeleton.SetColor(color);
-                                }
-                            }
-                        }
-                        else //show out
-                        {
-                            if (_curState.p_bodyHide == true)
-                            {
-                                _curState.p_bodyHide = false;
-                                if (_hasAnimator == true)
-                                {
-                                    Color color = _sdAnimator.skeleton.GetColor();
-                                    color.a = 1f;
-                                    _sdAnimator.skeleton.SetColor(color);
-                                }
-                            }
+                            _animRenderer.GetPropertyBlock(_animMpb);
+                            _animMpb.SetFloat("_Alpha", _curState.p_bodyHide ? 0.5f : 1.0f);
+                            _animRenderer.SetPropertyBlock(_animMpb);
                         }
 
                         OnStateChanged(stateType, oriValue, value);
@@ -1364,7 +1311,6 @@ namespace WarField
                         if (_curState.p_attackSpeed < 0)
                             _curState.p_attackSpeed = 0.00001f;
                         _oriAttackInterval = SD.GetAttackInterval(_curState.p_attackSpeed);
-                        SetAnimationPlaySpeed();
                         OnStateChanged(stateType, oriValue, _curState.p_attackSpeed);
                         break;
                     case SD.StateSoldierEffectType.MOVESPEED:
@@ -1373,7 +1319,6 @@ namespace WarField
                         if (_curState.p_moveSpeed < 0)
                             _curState.p_moveSpeed = 0f;
                         _moveSpeed = Utils.FastNormalized(_moveSpeed) * (_curState.p_moveSpeed * Time.fixedDeltaTime);
-                        SetAnimationPlaySpeed();
                         OnStateChanged(stateType, oriValue, _curState.p_moveSpeed);
                         break;
                     case SD.StateSoldierEffectType.PHYARMOR:
@@ -1395,31 +1340,12 @@ namespace WarField
                         else
                             oriValue = 1;
                         float value = CalculateState(list, index, prvValue);
-                        if (value < 0) //Hide
+                        _curState.p_bodyHide = value < 0;
+                        if (_animRenderer != null)
                         {
-                            if (_curState.p_bodyHide == false)
-                            {
-                                _curState.p_bodyHide = true;
-                                if (_hasAnimator == true)
-                                {
-                                    Color color = _sdAnimator.skeleton.GetColor();
-                                    color.a = 0.5f;
-                                    _sdAnimator.skeleton.SetColor(color);
-                                }
-                            }
-                        }
-                        else //show out
-                        {
-                            if (_curState.p_bodyHide == true)
-                            {
-                                _curState.p_bodyHide = false;
-                                if (_hasAnimator == true)
-                                {
-                                    Color color = _sdAnimator.skeleton.GetColor();
-                                    color.a = 1f;
-                                    _sdAnimator.skeleton.SetColor(color);
-                                }
-                            }
+                            _animRenderer.GetPropertyBlock(_animMpb);
+                            _animMpb.SetFloat("_Alpha", _curState.p_bodyHide ? 0.5f : 1.0f);
+                            _animRenderer.SetPropertyBlock(_animMpb);
                         }
 
                         OnStateChanged(stateType, oriValue, value);
@@ -1774,8 +1700,8 @@ namespace WarField
         //显示/隐藏 士兵的动画
         public void ChangeAnimRender(bool value)
         {
-            if(_hasAnimator == true)
-                _sdAnimRender.enabled = value;
+            if (_animRenderer != null)
+                _animRenderer.enabled = value;
         }
 
         //这是框选了一群士兵之后调用的
@@ -1806,17 +1732,7 @@ namespace WarField
         //soldier有可能在某些情况下不能移动，并且停止动画 (e.g. 传送开始和结束)
         public virtual void SetSDActive(bool isActive)
         {
-            if (_isActive == isActive)
-                return;
             _isActive = isActive;
-            if (_isActive == true)
-            {
-                SetAnimationPlaySpeed(); //恢复动画播放
-            }
-            else
-            {
-                SetAnimationPlaySpeed(true); //停止动画播放
-            }
         }
 
         //触发主动技能
@@ -1829,6 +1745,7 @@ namespace WarField
         {
             base.ChangeMapId(mapId);
             _mapBase = WarMapCtrl.Instance.GetMapByIndex(_mapId).gs_passablePart.min;
+            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapBase.y));
         }
 
         //被嘲讽
@@ -2327,6 +2244,45 @@ namespace WarField
             }
         }
 
+        //计算需要使用的动画的方向
+        protected int CalculateDirectionIndex(Vector2 moveDir)
+        {
+            if (moveDir.sqrMagnitude < 0.001f)
+                return _currentDirIndex; // 静止时保持上一帧的方向
+
+            // Atan2 返回 -180 到 180，顺应 0 面向正下方的设定作垂直角归一化偏移
+            float angle = Mathf.Atan2(moveDir.y, moveDir.x) * Mathf.Rad2Deg;
+            float normalizedAngle = angle + 90f;
+            if (normalizedAngle < 0f) normalizedAngle += 360f;
+
+            // 逆时针 45 度划分为 8 个扇区（0~7）
+            return Mathf.RoundToInt(normalizedAngle / 45f) % 8;
+        }
+
+        // 带角度滞回 (hysteresis) 的方向计算: 仅用于持续移动状态下根据实际位移推朝向.
+        // 8 扇区每个 ±22.5°, 在堵塞/避让位置 actualMove 方向噪声常常恰好骑在扇区边界, 朴素 RoundToInt
+        // 会把方向索引在邻接扇区间反复弹跳, 直接体现成贴图换面闪动.
+        // 此处叠加 8° 滞回区: 当前方向中心 30.5° 范围内不切扇区, 必须真的越过这一窗口才切换,
+        // 既保留正常方向迁移, 又把单帧噪声压在窗口内不影响渲染.
+        protected int CalculateDirectionIndexWithHysteresis(Vector2 moveDir, int currentIndex)
+        {
+            if (moveDir.sqrMagnitude < 0.001f)
+                return currentIndex;
+
+            float angle = Mathf.Atan2(moveDir.y, moveDir.x) * Mathf.Rad2Deg;
+            float normalizedAngle = angle + 90f;
+            if (normalizedAngle < 0f) normalizedAngle += 360f;
+
+            float currentSectorCenter = currentIndex * 45f;
+            float deltaAngle = Mathf.Abs(Mathf.DeltaAngle(currentSectorCenter, normalizedAngle));
+
+            const float hysteresisHalfWidth = 22.5f + 8f; // 22.5°为天然扇区半宽, 8°是滞回额外阈值
+            if (deltaAngle < hysteresisHalfWidth)
+                return currentIndex;
+
+            return Mathf.RoundToInt(normalizedAngle / 45f) % 8;
+        }
+
         //rival searcher callback, 找到最近的rival
         protected virtual void OnClosestRivalFound(IGridNode target, float distance)
         {
@@ -2489,25 +2445,6 @@ namespace WarField
         protected void SetMoveDir(GD.DirDef dir)
         {
             _moveDir = dir;
-
-            if (((int)_moveDir & (int)GD.DirDef.LDir) != 0)
-            {
-                if (_hasAnimator == true)
-                {
-                    Vector3 scale = _sdAnimator.transform.localScale;
-                    if (scale.x > 0)
-                        _sdAnimator.transform.localScale = new Vector3(-scale.x, scale.y, scale.z); //只对动画节点进行翻转
-                }
-            }
-            else if(((int)_moveDir & (int)GD.DirDef.RDir) != 0)
-            {
-                if (_hasAnimator == true)
-                {
-                    Vector3 scale = _sdAnimator.transform.localScale;
-                    if (scale.x < 0)
-                        _sdAnimator.transform.localScale = new Vector3(-scale.x, scale.y, scale.z); //只对动画节点进行翻转
-                }
-            }
         }
 
         //handle die skill and buff
@@ -2682,74 +2619,49 @@ namespace WarField
         //return true :start play a new animation
         protected virtual bool CheckAnimation()
         {
-            if (_hasAnimator == false)
-                return true;
-
-            bool animLoop = false;
+		    SD.SoldierAnimType nextAnim = SD.SoldierAnimType.MIN;
 
             //check status match the animation is playing, not match most happen when skill break up the cuurent animation
             switch (_curStatus)
             {
                 case SD.SoldierStatus.INIT:
                 case SD.SoldierStatus.IDLE:
-                {
-                    _nextAnimType = SD.SoldierAnimType.IDLE;
-                    animLoop = true;
-                }
+                    nextAnim = SD.SoldierAnimType.IDLE;
                     break;
                 case SD.SoldierStatus.BORN:
-                {
-                    _nextAnimType = SD.SoldierAnimType.BORN;
-                    animLoop = false;
-                }
+                    nextAnim = SD.SoldierAnimType.BORN;
                     break;
                 case SD.SoldierStatus.MOVE:
-                {
-                    _nextAnimType = SD.SoldierAnimType.MOVE;
-                    animLoop = true;
-                }
+                    nextAnim = SD.SoldierAnimType.MOVE;
                     break;
                 case SD.SoldierStatus.ATTACKTATGET:
-                {
-                    _nextAnimType = SD.SoldierAnimType.ATTACK;
-                    animLoop = false;
-                }
+                    nextAnim = SD.SoldierAnimType.ATTACK;
                     break;
                 case SD.SoldierStatus.RELEASESKILL:
-                {
-                    _nextAnimType = SD.SoldierAnimType.SKILL;
-                    animLoop = false;
-                }
+                    nextAnim = SD.SoldierAnimType.SKILL;
                     break;
                 case SD.SoldierStatus.DIE:
-                {
-                    _nextAnimType = SD.SoldierAnimType.DIE;
-                    animLoop = false;
-                }
+                    nextAnim = SD.SoldierAnimType.DIE;
                     break;
                 case SD.SoldierStatus.INTERRUPT:
-                {
-                    _nextAnimType = SD.SoldierAnimType.STUN;
-                    animLoop = true;
-                }
+                    nextAnim = SD.SoldierAnimType.STUN;
                     break;
                 default:
                     return true;
             }
 
-            //get the animation type is playing
-            var trackEntry = _sdAnimator.AnimationState.GetCurrent(0);
-            bool animOver = true;
-            if (trackEntry != null)
-                animOver = trackEntry.IsComplete; //如果loop==true， 这个值永远是false
+		    // 计算 animOver 状态
+		    // 如果 _curAnimType 被 OnAnimFinish 重置为了 MIN，说明非循环动画已播完
+		    // 如果当前是 MOVE/IDLE 等循环动画，它永远不会自然完结，animOver 严格为 false
+		    bool animOver = (_curAnimType == SD.SoldierAnimType.MIN);
 
-            if (_nextAnimType != _curAnimType) //the animation want to play not equal to the current playing
+            if (nextAnim != _curAnimType) //the animation want to play not equal to the current playing
             {
                 if (animOver == false) //animation not over, need to break up the current animation
                 {
-                    if (_curAnimType == SD.SoldierAnimType.SKILL && ReferenceEquals(_skillInAnim, null) == false) //skill be interrupted
+                    if (_curAnimType == SD.SoldierAnimType.SKILL && _skillInAnim != null) //skill be interrupted
                     {
-                        _skillInAnim.SkillAnimInterrupted(_nextAnimType); //info skill animation finished
+                        _skillInAnim.SkillAnimInterrupted(nextAnim); //info skill animation finished
                         _skillInAnim = null;
                     }
                     else if (_curAnimType == SD.SoldierAnimType.ATTACK) //攻击被打断，重新开始攻击记时
@@ -2758,7 +2670,7 @@ namespace WarField
                     }
                 }
 
-                if (_nextAnimType == SD.SoldierAnimType.ATTACK && _nextAttackInterval > 0)
+                if (nextAnim == SD.SoldierAnimType.ATTACK && _nextAttackInterval > 0)
                     return false; //计时没到，不触发动画
             }
             else //next animation is just current one
@@ -2767,22 +2679,22 @@ namespace WarField
                 {
                     //during the skill animation, will keep enter this branch and return false
                     //must wait the current animation finish to do next attack or skill
-                    if (_nextAnimType == SoldierDefines.SoldierAnimType.SKILL) //previous skill animation not finished ,can not play a new one, should happen
+                    if (nextAnim == SoldierDefines.SoldierAnimType.SKILL) //previous skill animation not finished ,can not play a new one, should happen
                         return false;
-                    else if (_nextAnimType == SoldierDefines.SoldierAnimType.ATTACK) //attack faster then anim, ignore the new one
+                    else if (nextAnim == SoldierDefines.SoldierAnimType.ATTACK) //attack faster then anim, ignore the new one
                         return false;
-                    else if (_nextAnimType == SD.SoldierAnimType.DIE) //die anim can only play once
+                    else if (nextAnim == SD.SoldierAnimType.DIE) //die anim can only play once
                         return false;
-                    else if (_nextAnimType == SD.SoldierAnimType.BORN) //born anim can only play once
+                    else if (nextAnim == SD.SoldierAnimType.BORN) //born anim can only play once
                         return false;
-                    else if (_nextAnimType == SD.SoldierAnimType.ATTACK) //攻击动画不能被自己打断
+                    else if (nextAnim == SD.SoldierAnimType.ATTACK) //攻击动画不能被自己打断
                         return false;
                     else
                         return false; //for move, idle, stun animation
                 }
                 else
                 {
-                    if (_nextAnimType == SD.SoldierAnimType.ATTACK)
+                    if (nextAnim == SD.SoldierAnimType.ATTACK)
                     {
                         if (_nextAttackInterval > 0)
                             return false; //计时没到，不触发动画
@@ -2792,127 +2704,160 @@ namespace WarField
 
             //play a new animation, different from the current
             if (_inDebug == true)
-                GameLogger.LogDebug(_sdName + ": play animation " + _nextAnimType + "  status:" + _curStatus + " current:" + _curAnimType);
-            _curAnimType = _nextAnimType; //record _curAnimType
-            if (_hasAnim[(int)_curAnimType] == true)
-            {
-                SetAnimationPlaySpeed();
-                int index = 0;
-                int animCnt = _animType2NameDic[_nextAnimType].Count;
-                switch (animCnt)
-                {
-                    case 2:
-                        if (Utils.GetRandomInt() > 50)
-                            index = 1;
-                        break;
-                    case 3: //has two anim, 目前一个类型的动画最多有3个
-                        int rn = Utils.GetRandomInt();
-                        if (rn > 66)
-                            index = 2;
-                        else if (rn > 33)
-                            index = 1;
-                        break;
-                    default:
-                        break;
-                }
+                GameLogger.LogDebug(_sdName + ": play animation " + nextAnim + "  status:" + _curStatus + " current:" + _curAnimType);
+            _curAnimType = nextAnim; //record _curAnimType
+		    _frameTimer = 0f;
+		    _currentFrameIndex = 0;
+		    _lastTriggeredFrame = -1;
 
-                TrackEntry entry = _sdAnimator.AnimationState.SetAnimation(0, _animType2NameDic[_nextAnimType][index], animLoop);
-                if (entry == null)
+		    if (!_animClipConfigDic.ContainsKey(_curAnimType))
+		    {
+		        _curAnimType = SD.SoldierAnimType.MIN;
+		    }
+
+		    return true;
+		}
+
+        // 每帧驱动当前动作的帧步进与寻址合并执行
+        protected void UpdateFrameAnimation(float deltaTime)
+        {
+            if (_curAnimType == SD.SoldierAnimType.MIN)
+                return;
+
+            if (!_animClipConfigDic.TryGetValue(_curAnimType, out var clip))
+            {
+                if (_inDebug)
+					GameLogger.LogError($"{_sdName} not has anim {_curAnimType}");
+                return;
+            }
+
+            // 考虑动画本身的播放速率调节（例如攻击速度、移动速度加成影响表现层）
+            float speedModifier = 1.0f;
+            if (_curAnimType == SD.SoldierAnimType.MOVE)
+                speedModifier = _curState.p_moveSpeed;
+            else if (_curAnimType == SD.SoldierAnimType.ATTACK)
+                speedModifier = _curState.p_attackSpeed;
+
+            _frameTimer += deltaTime * clip.p_frameRate * speedModifier;
+
+            int nextFrame = (int)_frameTimer;
+
+            // 处理动画事件触发时机 (替代旧的 Spine 事件监听)
+            if (nextFrame != _currentFrameIndex)
+            {
+                if (clip.p_eventFrame != -1 && nextFrame >= clip.p_eventFrame && _lastTriggeredFrame < clip.p_eventFrame)
                 {
-                    GameLogger.LogError($"{_sdName}: Play anim failed {_animType2NameDic[_nextAnimType][index]}");
+                    OnAnimEvent(clip.p_eventFrame);
+                    _lastTriggeredFrame = clip.p_eventFrame;
                 }
             }
-            else //not has this animation
+
+            // 处理生命周期完结、循环与打断
+            if (nextFrame >= clip.p_animFrameCount)
             {
-                //GameLogger.LogDebug($"{_sdName} not has animation {_curAnimType.ToString()}, not play it");
+                if (clip.p_isLoop)
+                {
+                    // 环绕保留亚帧越界量, 否则帧 0 每轮循环都会比其它帧多停一个 FixedUpdate tick,
+                    // 在行走/待机这类高频循环动画里就是肉眼可见的"特定一帧卡顿".
+                    // 用 fmod 而非简单减一次, 兼容极高 speedModifier 单 tick 推进 > 1 帧的极端情况.
+                    _frameTimer -= clip.p_animFrameCount * Mathf.Floor(_frameTimer / clip.p_animFrameCount);
+                    _currentFrameIndex = (int)_frameTimer;
+                    _lastTriggeredFrame = -1;
+                }
+                else
+                {
+                    // 非循环动画播放完成
+                    OnAnimFinish();
+                    return;
+                }
+            }
+            else
+            {
+                _currentFrameIndex = nextFrame;
+            }
+
+            // 锁定朝向
+            if (_curStatus == SD.SoldierStatus.MOVE) //因为_desiredMoveDir是在jobs中计算的,会被每帧清空
+            {
+                Vector2 actualMoveVector = (Vector2)_transform.position - _lastFramePos;
+
+                // 1) 时间维度滤波: EMA 把"撞墙→反弹"的高频反转拉直成净位移趋势.
+                //    α=0.25 大约等价 4 帧窗口 (50Hz fixed update 下 ~80ms), 噪声压下来又不会明显拖尾.
+                const float emaAlpha = 0.25f;
+                _animMoveDirEMA = Vector2.Lerp(_animMoveDirEMA, actualMoveVector, emaAlpha);
+
+                // 2) 净位移闸门: 滤波后的方向向量量级需要达到 "期望步长的 20%" 才更新方向.
+                //    撞墙对称反弹时 EMA 量级被相消到接近 0, 自然落到闸门下方, 直接锁住上一帧朝向.
+                float expectedStep = _curState.p_moveSpeed * Time.fixedDeltaTime;
+                float minStep = Mathf.Max(expectedStep * 0.2f, 0.015f);
+                if (_animMoveDirEMA.sqrMagnitude > minStep * minStep)
+                {
+                    // 3) 空间维度滞回: EMA 量级刚过闸门时方向角仍可能骑在扇区边界, 再做一次 30.5° 角度滞回.
+                    _currentDirIndex = CalculateDirectionIndexWithHysteresis(_animMoveDirEMA, _currentDirIndex);
+                }
+            }
+            else
+            {
+                // 退出 MOVE 状态时清空滤波器累积, 下次进入 MOVE 不会拿到陈旧方向.
+                _animMoveDirEMA = Vector2.zero;
+
+                if (_rival != null)
+                {
+                    Vector2 lookDir = _rival.transform.position - _transform.position;
+                    _currentDirIndex = CalculateDirectionIndex(lookDir);
+                }
+            }
+
+            // 帧图片寻址
+            int finalSliceIndex = clip.p_animStartOffset + (_currentDirIndex * clip.p_animFrameCount) + _currentFrameIndex;
+
+            // 更新材质
+            if (_animRenderer != null)
+            {
+                _animRenderer.GetPropertyBlock(_animMpb);
+                _animMpb.SetFloat("_FinalSliceIndex", finalSliceIndex);
+                _animRenderer.SetPropertyBlock(_animMpb);
+            }
+        }
+
+        //帧动画过程中的事件
+        protected void OnAnimEvent(int frame)
+        {
+            if (_curAnimType == SD.SoldierAnimType.ATTACK)
+                AttackPost();
+            else if (_curAnimType == SD.SoldierAnimType.DIE)
+                TriggerDieAction();
+            else if (_curAnimType == SD.SoldierAnimType.SKILL && _skillInAnim != null)
+                _skillInAnim.SkillAnimTakeEffect("");
+        }
+
+        //帧动画b播放完成
+        protected void OnAnimFinish()
+        {
+            if (_curAnimType == SD.SoldierAnimType.DIE)
+            {
+                TriggerDieAction();
+                OnSoldierDie();
+            }
+            else if (_curAnimType == SD.SoldierAnimType.ATTACK)
+            {
+                _nextAttackInterval += _oriAttackInterval;
+                _curAnimType = SD.SoldierAnimType.MIN; // 重置等待状态机分发
+            }
+            else if (_curAnimType == SD.SoldierAnimType.SKILL)
+            {
+                _skillInAnim = null;
+                _curAnimType = SD.SoldierAnimType.MIN;
+            }
+            else if (_curAnimType == SD.SoldierAnimType.BORN)
+            {
+                _isBorned = true;
                 _curAnimType = SD.SoldierAnimType.MIN;
             }
 
-            _nextAnimType = SD.SoldierAnimType.MIN;
-            return true;
-        }
-
-        //the event send from spine animation
-        protected virtual void OnAnimationNotification(Spine.TrackEntry trackEntry, Spine.Event e)
-        {
-            if (_inDebug == true)
-                GameLogger.LogDebug(_sdName + " Received event: " + e.Data.Name + " " + e.Data.String);
-
-            switch (e.Data.Name)
-            {
-                case "attack":
-                    AttackPost();
-                    break;
-                case "die":
-                    TriggerDieAction();
-                    break;
-                case "skill":
-                    _skillInAnim.SkillAnimTakeEffect(e.String); //info skill animation take effect
-                    break;
-                case "animFinish":
-                    if (_curAnimType == SD.SoldierAnimType.DIE)
-                    {
-                        TriggerDieAction();
-                        OnSoldierDie();
-                    }
-                    else if (_curAnimType == SD.SoldierAnimType.SKILL)
-                        _skillInAnim = null;
-                    else if (_curAnimType == SD.SoldierAnimType.ATTACK)
-                        _nextAttackInterval += _oriAttackInterval;
-                    else if (_curAnimType == SD.SoldierAnimType.BORN)
-                        _isBorned = true;
-                    _curAnimType = SD.SoldierAnimType.MIN;
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        //set the animation play speed
-        //for move/movetarget: animation is in 1s move 1 unit (speed=1)
-        //for attack: animation is in 1s attack 1 time
-        //for skill: the play speed is 1
-        private void SetAnimationPlaySpeed(bool stopAnim = false)
-        {
-            if(_hasAnimator == false)
-                return;
-
-            if (stopAnim == true)
-            {
-                _sdAnimator.AnimationState.TimeScale = 0;
-                return;
-            }
-
-            float speed = 1.0f;
-            switch (_curAnimType)
-            {
-                case SD.SoldierAnimType.MIN:
-                    if (_curStatus == SD.SoldierStatus.MOVE)
-                        speed = _curState.p_moveSpeed;
-                    else if (_curStatus == SD.SoldierStatus.ATTACKTATGET)
-                        speed = _curState.p_attackSpeed;
-                    else if (_curStatus == SD.SoldierStatus.RELEASESKILL)
-                        speed = 1.0f;
-                    break;
-                case SD.SoldierAnimType.MOVE:
-                    speed = _curState.p_moveSpeed;
-                    break;
-                case SD.SoldierAnimType.ATTACK:
-                    speed = _curState.p_attackSpeed;
-                    break;
-                case SD.SoldierAnimType.IDLE:
-                case SD.SoldierAnimType.STUN:
-                case SD.SoldierAnimType.DIE:
-                case SD.SoldierAnimType.SKILL:
-                case SD.SoldierAnimType.BORN:
-                    speed = 1.0f;
-                    break;
-                default:
-                    break;
-            }
-
-            _sdAnimator.AnimationState.TimeScale = speed;
-            //_sdAnimator.speed = speed;
+            _lastTriggeredFrame = -1;
+            _frameTimer = 0f;
+            _currentFrameIndex = 0;
         }
 
         protected virtual void InitBuffArray()
@@ -2970,10 +2915,7 @@ namespace WarField
         //重置动画的角度
         protected void ResetFaceDir()
         {
-            if(_faction == WE.FactionType.FRIENDLY)
-                SetMoveDir(GD.DirDef.RDir);
-            else
-                SetMoveDir(GD.DirDef.LDir);
+            _currentDirIndex = (_faction == WE.FactionType.FRIENDLY) ? 2 : 6;
         }
 
         //改变动画角度；可操控单位在 MOVE 时面向操控方向，仅在 IDLE/ATTACK 时面向敌人
@@ -3007,13 +2949,7 @@ namespace WarField
 
         protected void SetFaceDirByVector(Vector2 dir)
         {
-            if (Utils.IsSameDir(dir, _moveDir) == false)
-            {
-                if (dir.x > 0)
-                    SetMoveDir(GD.DirDef.RDir);
-                else if (dir.x < 0)
-                    SetMoveDir(GD.DirDef.LDir);
-            }
+            _currentDirIndex = CalculateDirectionIndex(dir);
         }
 
         //calculate state when _stateChange add or remove a item
@@ -3077,16 +3013,9 @@ namespace WarField
             _wfId = $"{_warEleType}_{_faction}_{_sdName}_{WE.GetSdIndex(_faction)}";
         }
 
-        protected override void OnPause()
-        {
-            if(_hasAnimator == true)
-                _sdAnimator.timeScale = 0; //暂停动画播放
-        }
+        protected override void OnPause() { }
 
-        protected override void OnResume()
-        {
-            SetAnimationPlaySpeed(); //恢复动画播放
-        }
+        protected override void OnResume() { }
 
         protected virtual void SdOnSkillUpdate()
         {

@@ -193,11 +193,11 @@ namespace WarField
                 return false;
             }
 
-            if (SoldierCtrl.Instance.IsSoldierAvailable(_bdConf.gs_race, _troopType, sdType) == false)
-            {
-                 GameLogger.LogError($"{_troopType} Can not upgrade soldier to {sdType}, it is not available");
-                 return false;
-            }
+            // if (SoldierCtrl.Instance.IsSoldierAvailable(_bdConf.gs_race, _troopType, sdType) == false)
+            // {
+            //      GameLogger.LogError($"{_troopType} Can not upgrade soldier to {sdType}, it is not available");
+            //      return false;
+            // }
 
             SoldierConf sd = SoldierCtrl.Instance.GetSdConf(WE.RaceType.Human, _troopType, sdType);
             if (sd == null || sd.p_level != SD.SoldierLevel.HIGHLEVEL)
@@ -394,7 +394,7 @@ namespace WarField
 
 #region private functions
 
-        protected override void OnBdWork()
+        protected override void OnBdWork(float deltaTime)
         {
             lock (_spawnLock)
             {
