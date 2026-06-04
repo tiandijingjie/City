@@ -5,6 +5,7 @@ using Spine.Unity;
 using UnityEngine;
 using UnityEngine.AddressableAssets;
 using UnityEngine.EventSystems;
+using UnityEngine.ResourceManagement.AsyncOperations;
 
 namespace WarField
 {
@@ -131,12 +132,31 @@ namespace WarField
 
         private void LoadSoldierAnim(string name)
         {
-            Addressables.LoadAssetAsync<SkeletonDataAsset>(name.Replace(" ","")).Completed += handle =>
+            string address = name.Replace(" ", "");
+            // TODO: 烘焙动画士兵（如 Infantry）暂无 Spine 资源，后续补齐后再加载
+            Addressables.LoadResourceLocationsAsync(address, typeof(SkeletonDataAsset)).Completed += locHandle =>
             {
-                var skeleton = handle.Result;
-                _soldierAnim.skeletonDataAsset = skeleton;
-                _soldierAnim.Initialize(true);
-                _soldierAnim.AnimationState.SetAnimation(0, "Move", true);
+                if (locHandle.Status != AsyncOperationStatus.Succeeded
+                    || locHandle.Result == null
+                    || locHandle.Result.Count == 0)
+                {
+                    _soldierAnim.gameObject.SetActive(false);
+                    return;
+                }
+
+                Addressables.LoadAssetAsync<SkeletonDataAsset>(address).Completed += handle =>
+                {
+                    if (handle.Status != AsyncOperationStatus.Succeeded)
+                    {
+                        _soldierAnim.gameObject.SetActive(false);
+                        return;
+                    }
+
+                    _soldierAnim.gameObject.SetActive(true);
+                    _soldierAnim.skeletonDataAsset = handle.Result;
+                    _soldierAnim.Initialize(true);
+                    _soldierAnim.AnimationState.SetAnimation(0, "Move", true);
+                };
             };
         }
 #endregion

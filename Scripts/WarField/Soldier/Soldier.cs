@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using Unity.Collections;
 using Unity.Mathematics;
+using WarField.Anim;
 
 namespace WarField
 {
@@ -13,7 +14,7 @@ namespace WarField
     using SKD = SkillDefines;
     using BFD = BuffDefines;
 
-    public class Soldier : WarEleParent, IProtector
+    public class Soldier : WarEleParent, IProtector, IAnimInfo
     {
 #region public parameters
 
@@ -105,7 +106,9 @@ namespace WarField
         protected int _currentFrameIndex = 0;
         protected float _frameTimer = 0f;
         protected int _lastTriggeredFrame = -1; //防止同一步内重复触发关键帧事件
-        protected Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> _animClipConfigDic;  //anim Id-> animation detail
+        // StateAnimData 存整个状态（含所有变体 + p_isLoop）；int 字典追踪每个动画当前选中的变体索引
+        protected Dictionary<SD.SoldierAnimType, StateAnimData> _animClipConfigDic;
+        protected Dictionary<SD.SoldierAnimType, int> _animCurrentVariantIdxDic;
         protected SD.SoldierAnimType _curAnimType; //the animation is playing now
         protected Skill _skillInAnim; //point to the skill of the animation is playing, call SkillAnimFinish
         protected bool[] _hasAnim; //does character has SD.SoldierAnimType animation
@@ -760,6 +763,7 @@ namespace WarField
             _curPhyResistance = SD.GetPhysicsResistance(_curState.p_phyArmor);
 
             _animClipConfigDic = SoldierCtrl.Instance.GetSoldierAnimClips(_race, gs_troopType, gs_sdType);
+            _animCurrentVariantIdxDic = new Dictionary<SD.SoldierAnimType, int>();
             //赋值backed mesh
             Mesh bakedMesh = SoldierCtrl.Instance.GetSoldierBakedMesh(_race, gs_troopType, gs_sdType, _isHero);
             if (bakedMesh != null)
@@ -1771,6 +1775,27 @@ namespace WarField
         {
             return 1f;
         }
+
+        //IAnimInfo
+        public uint IAnimInfo_GetEleAnimId()
+        {
+            //[other 25-31][sdtype 8-24][troop 4-7][race 2-3][AnimEntityType 0-1]
+            return (uint)AnimDefines.AnimEntityType.SOLDIER | (uint)_race << 2 | (uint)gs_troopType << 4 | (uint)gs_sdType << 8;
+        }
+
+        public Dictionary<string, uint> IAnimInfo_GetStateId()
+        {
+            Dictionary<string, uint> ret = new Dictionary<string, uint>();
+            ret.Add("Idle", (uint)SD.SoldierAnimType.IDLE);
+            ret.Add("Move", (uint)SD.SoldierAnimType.MOVE);
+            ret.Add("Attack", (uint)SD.SoldierAnimType.ATTACK);
+            ret.Add("Skill", (uint)SD.SoldierAnimType.SKILL);
+            ret.Add("Stun", (uint)SD.SoldierAnimType.STUN);
+            ret.Add("Die", (uint)SD.SoldierAnimType.DIE);
+            ret.Add("Born", (uint)SD.SoldierAnimType.BORN);
+            return ret;
+        }
+
 #endregion
 
 #region private functions
@@ -2709,6 +2734,7 @@ namespace WarField
 		    _frameTimer = 0f;
 		    _currentFrameIndex = 0;
 		    _lastTriggeredFrame = -1;
+            SelectRandomAnimVariation(_curAnimType);
 
 		    if (!_animClipConfigDic.ContainsKey(_curAnimType))
 		    {
@@ -2718,18 +2744,46 @@ namespace WarField
 		    return true;
 		}
 
+        protected void SelectRandomAnimVariation(SD.SoldierAnimType animType)
+        {
+            if (_animClipConfigDic == null || _animCurrentVariantIdxDic == null)
+                return;
+
+            if (!_animClipConfigDic.TryGetValue(animType, out var stateData) ||
+                stateData == null || stateData.p_variations == null || stateData.p_variations.Count == 0)
+                return;
+
+            int count = stateData.p_variations.Count;
+            _animCurrentVariantIdxDic[animType] = count == 1 ? 0 : UnityEngine.Random.Range(0, count);
+        }
+
         // 每帧驱动当前动作的帧步进与寻址合并执行
         protected void UpdateFrameAnimation(float deltaTime)
         {
             if (_curAnimType == SD.SoldierAnimType.MIN)
                 return;
 
-            if (!_animClipConfigDic.TryGetValue(_curAnimType, out var clip))
+            if (!_animClipConfigDic.TryGetValue(_curAnimType, out var stateData))
             {
                 if (_inDebug)
 					GameLogger.LogError($"{_sdName} not has anim {_curAnimType}");
                 return;
             }
+
+            if (stateData.p_variations == null || stateData.p_variations.Count == 0)
+                return;
+
+            // 取当前随机选中的变体；未设置则默认 0
+            int varIdx = (_animCurrentVariantIdxDic != null &&
+                          _animCurrentVariantIdxDic.TryGetValue(_curAnimType, out int vi)) ? vi : 0;
+            if (varIdx >= stateData.p_variations.Count) varIdx = 0;
+            VariationAnimData varData = stateData.p_variations[varIdx];
+
+            if (varData.p_animStartOffset == null || varData.p_animStartOffset.Count == 0)
+                return;
+
+            // 方向超界时回退到 Dir_0
+            int safeDir = _currentDirIndex < varData.p_animStartOffset.Count ? _currentDirIndex : 0;
 
             // 考虑动画本身的播放速率调节（例如攻击速度、移动速度加成影响表现层）
             float speedModifier = 1.0f;
@@ -2738,29 +2792,30 @@ namespace WarField
             else if (_curAnimType == SD.SoldierAnimType.ATTACK)
                 speedModifier = _curState.p_attackSpeed;
 
-            _frameTimer += deltaTime * clip.p_frameRate * speedModifier;
+            _frameTimer += deltaTime * varData.p_frameRate * speedModifier;
 
             int nextFrame = (int)_frameTimer;
 
             // 处理动画事件触发时机 (替代旧的 Spine 事件监听)
             if (nextFrame != _currentFrameIndex)
             {
-                if (clip.p_eventFrame != -1 && nextFrame >= clip.p_eventFrame && _lastTriggeredFrame < clip.p_eventFrame)
+                if (varData.p_eventFrame != -1 && nextFrame >= varData.p_eventFrame && _lastTriggeredFrame < varData.p_eventFrame)
                 {
-                    OnAnimEvent(clip.p_eventFrame);
-                    _lastTriggeredFrame = clip.p_eventFrame;
+                    OnAnimEvent(varData.p_eventFrame);
+                    _lastTriggeredFrame = varData.p_eventFrame;
                 }
             }
 
             // 处理生命周期完结、循环与打断
-            if (nextFrame >= clip.p_animFrameCount)
+            // p_isLoop 已提升至 StateAnimData，该状态下所有变体共享同一循环设置
+            if (nextFrame >= varData.p_animFrameCount)
             {
-                if (clip.p_isLoop)
+                if (stateData.p_isLoop)
                 {
                     // 环绕保留亚帧越界量, 否则帧 0 每轮循环都会比其它帧多停一个 FixedUpdate tick,
                     // 在行走/待机这类高频循环动画里就是肉眼可见的"特定一帧卡顿".
                     // 用 fmod 而非简单减一次, 兼容极高 speedModifier 单 tick 推进 > 1 帧的极端情况.
-                    _frameTimer -= clip.p_animFrameCount * Mathf.Floor(_frameTimer / clip.p_animFrameCount);
+                    _frameTimer -= varData.p_animFrameCount * Mathf.Floor(_frameTimer / varData.p_animFrameCount);
                     _currentFrameIndex = (int)_frameTimer;
                     _lastTriggeredFrame = -1;
                 }
@@ -2808,8 +2863,8 @@ namespace WarField
                 }
             }
 
-            // 帧图片寻址
-            int finalSliceIndex = clip.p_animStartOffset + (_currentDirIndex * clip.p_animFrameCount) + _currentFrameIndex;
+            // 帧图片寻址：p_animStartOffset[dirIndex] 是该方向在 Texture2DArray 中的绝对起始切片
+            int finalSliceIndex = varData.p_animStartOffset[safeDir] + _currentFrameIndex;
 
             // 更新材质
             if (_animRenderer != null)
@@ -3150,4 +3205,3 @@ namespace WarField
 #endregion
     }
 }
-

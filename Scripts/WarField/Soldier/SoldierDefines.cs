@@ -140,35 +140,6 @@ namespace WarField
             MAX,
         }
 
-        //animation
-        [System.Serializable]
-        public struct FrameAnimClipOffsets
-        {
-            public int p_animStartOffset; // 该动作在 Texture2DArray 内的起始切片索引
-            public int p_animFrameCount;  // 该动作单方向的绝对帧数（例如：走8帧、打12帧）
-            public float p_frameRate;     // 播放帧率（如 12fps）
-            public bool p_isLoop;         // 是否循环播放
-            public int p_eventFrame;      // 关键事件触发帧（-1表示无事件）
-        }
-
-        [System.Serializable]
-        public class SingleSoldierAnimBakedData
-        {
-            public string p_sdName;
-            // 因为 Dictionary 默认无法被 Unity 序列化保存，用两个对齐的 List 来平替结构
-            public List<SoldierAnimType> p_animTypes = new List<SoldierAnimType>();
-            public List<FrameAnimClipOffsets> p_clipOffsets = new List<FrameAnimClipOffsets>();
-            public Mesh p_bakedMesh; //soldier的mesh,soldier所有动画共享一个mesh
-
-            public Texture2DArray p_hdColorArray;
-            public Texture2DArray p_mdColorArray;
-            public Texture2DArray p_ldColorArray;
-
-            public Texture2DArray p_hdNormalArray;
-            public Texture2DArray p_mdNormalArray;
-            public Texture2DArray p_ldNormalArray;
-        }
-
         static public float GetPhysicsResistance(float phyArmor)
         {
             float ret = (0.06f * phyArmor) / (1.0f + 0.06f * Mathf.Abs(phyArmor));

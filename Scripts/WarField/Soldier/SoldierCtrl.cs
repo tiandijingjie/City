@@ -26,6 +26,10 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine.Jobs;
 using UnityEngine.Rendering;
+using WarField.Anim;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 namespace WarField
 {
@@ -50,7 +54,7 @@ namespace WarField
             public SoldierConf p_conf; //conf of state
             public IndividualData p_individual; //private data different from soldier to soldier
             public GameObject p_prefab; //soldier prefab
-            public Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> p_animClips; //solder's animation
+            public Dictionary<SD.SoldierAnimType, StateAnimData> p_animClips; //solder's animation
             public Mesh p_bakedMesh; //运行时将图片缓存空间转换为高合批网格引用,记录士兵所有动画帧中最大的8角mesh网格
             public Material p_sharedMaterial;
             //3种不同分辨率
@@ -68,7 +72,7 @@ namespace WarField
                 p_conf = null;
                 p_individual = null;
                 p_prefab = null;
-                p_animClips = new Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets>();
+                p_animClips = new Dictionary<SD.SoldierAnimType, StateAnimData>();
                 p_bakedMesh = null;
             }
         }
@@ -83,7 +87,9 @@ namespace WarField
             public int p_count;
         }
 
-        [SerializeField] private SoldierAnimConfig _bakedAnimConfig;
+        private const string GLOBAL_ANIM_CONFIG_PATH = "Assets/Animation/GlobalAnimConfig.asset";
+
+        [SerializeField, HideInInspector] private GlobalAnimConfig _animConfig;
         private WE.LodLevel _curGlobLodLevel = WE.LodLevel.MIN;
 
         //record all the data of a soldier type
@@ -313,11 +319,10 @@ namespace WarField
                 }
             }
 
-            if (_bakedAnimConfig != null)
+            _animConfig = LoadGlobalAnimConfig();
+            if (_animConfig != null)
             {
                 // 初始化离线资产的 string 字典快照
-                _bakedAnimConfig.InitializeCache();
-
                 for (int r = 1; r < (int)WE.RaceType.MAX; r++)
                 {
                     for (int t = 1; t < (int)SD.TroopType.MAX; t++)
@@ -331,32 +336,31 @@ namespace WarField
                             if (array[m] != null && array[m].p_conf != null)
                             {
                                 string sName = array[m].p_conf.p_name;
-                                WE.RaceType race = array[m].p_conf.p_race;
-                                SD.TroopType troop = array[m].p_conf.p_troop;
-                                var bakedClips = _bakedAnimConfig.GetClips(sName);
+                                ElementAnimBakedData elementData = _animConfig.GetElementData(sName);
+                                var bakedClips = BuildSoldierAnimStateClips(elementData);
 
                                 if (bakedClips != null)
 								{
                                     array[m].p_animClips = bakedClips;
 
                                     // 从 ScriptableObject 列表中读出对应的全量帧边界，加载进运行时内存
-                                    var sData = _bakedAnimConfig.p_allSoldiersBakedList.Find(x => x.p_sdName == sName);
                                     var animRenderer = array[m].p_prefab.transform.Find("SoldierAnim")?.GetComponent<MeshRenderer>();
                                     if (animRenderer != null)
                                     {
                                         array[m].p_sharedMaterial = animRenderer.sharedMaterial;
                                     }
-                                    if (sData != null)
+                                    if (elementData != null)
                                     {
                                         // 将离线烘焙网格注入运行时物理缓冲槽
-                                        array[m].p_bakedMesh = sData.p_bakedMesh;
-                                        array[m].p_hdColorArray = sData.p_hdColorArray;
-                                        array[m].p_mdColorArray = sData.p_mdColorArray;
-                                        array[m].p_ldColorArray = sData.p_ldColorArray;
 
-                                        array[m].p_hdNormalArray = sData.p_hdNormalArray;
-                                        array[m].p_mdNormalArray = sData.p_mdNormalArray;
-                                        array[m].p_ldNormalArray = sData.p_ldNormalArray;
+                                        array[m].p_bakedMesh = elementData.p_bakedMesh;
+                                        array[m].p_hdColorArray = elementData.p_hdColorArray;
+                                        array[m].p_mdColorArray = elementData.p_mdColorArray;
+                                        array[m].p_ldColorArray = elementData.p_ldColorArray;
+
+                                        array[m].p_hdNormalArray = elementData.p_hdNormalArray;
+                                        array[m].p_mdNormalArray = elementData.p_mdNormalArray;
+                                        array[m].p_ldNormalArray = elementData.p_ldNormalArray;
                                     }
 								}
                                 else
@@ -373,14 +377,26 @@ namespace WarField
                     if (_heroData[m] != null && _heroData[m].p_conf != null)
                     {
                         string hName = _heroData[m].p_conf.p_name;
-                        var bakedClips = _bakedAnimConfig.GetClips(hName);
+                        ElementAnimBakedData elementData = _animConfig.GetElementData(hName);
+                        var bakedClips = BuildSoldierAnimStateClips(elementData);
                         if (bakedClips != null)
                         {
                             _heroData[m].p_animClips = bakedClips;
-							var sData = _bakedAnimConfig.p_allSoldiersBakedList.Find(x => x.p_sdName == hName);
-                            if (sData != null)
+							var animRenderer = _heroData[m].p_prefab.transform.Find("SoldierAnim")?.GetComponent<MeshRenderer>();
+                            if (animRenderer != null)
                             {
-                                _heroData[m].p_bakedMesh = sData.p_bakedMesh;
+                                _heroData[m].p_sharedMaterial = animRenderer.sharedMaterial;
+                            }
+                            if (elementData != null)
+                            {
+                                _heroData[m].p_bakedMesh = elementData.p_bakedMesh;
+                                _heroData[m].p_hdColorArray = elementData.p_hdColorArray;
+                                _heroData[m].p_mdColorArray = elementData.p_mdColorArray;
+                                _heroData[m].p_ldColorArray = elementData.p_ldColorArray;
+
+                                _heroData[m].p_hdNormalArray = elementData.p_hdNormalArray;
+                                _heroData[m].p_mdNormalArray = elementData.p_mdNormalArray;
+                                _heroData[m].p_ldNormalArray = elementData.p_ldNormalArray;
                             }
                         }
                     }
@@ -916,7 +932,7 @@ namespace WarField
         }
 
         //查询帧动画
-        public Dictionary<SD.SoldierAnimType, SD.FrameAnimClipOffsets> GetSoldierAnimClips(WE.RaceType race, SD.TroopType troopT, int soldierT)
+        public Dictionary<SD.SoldierAnimType, StateAnimData> GetSoldierAnimClips(WE.RaceType race, SD.TroopType troopT, int soldierT)
         {
             var array = _soldierData[(int)race, (int)troopT];
             if (array == null || soldierT >= array.Length || array[soldierT] == null)
@@ -944,6 +960,63 @@ namespace WarField
 #endregion
 
 #region private functions
+
+        private GlobalAnimConfig LoadGlobalAnimConfig()
+        {
+#if UNITY_EDITOR
+            GlobalAnimConfig config = AssetDatabase.LoadAssetAtPath<GlobalAnimConfig>(GLOBAL_ANIM_CONFIG_PATH);
+            if (config != null)
+                return config;
+#endif
+
+            return _animConfig;
+        }
+
+        // 把 GlobalAnimConfig 里的 StateAnimData 按 SoldierAnimType 枚举名映射成运行时字典.
+        // 不再区分 "默认变体" 与 "所有变体列表"——StateAnimData 本身包含所有变体,
+        // Soldier 的 SelectRandomAnimVariation 在切换动画时随机选一个变体索引即可.
+        private Dictionary<SD.SoldierAnimType, StateAnimData> BuildSoldierAnimStateClips(ElementAnimBakedData elementData)
+        {
+            if (elementData == null)
+                return null;
+
+            var stateClips = new Dictionary<SD.SoldierAnimType, StateAnimData>();
+            for (int i = (int)SD.SoldierAnimType.MIN + 1; i < (int)SD.SoldierAnimType.MAX; i++)
+            {
+                SD.SoldierAnimType animType = (SD.SoldierAnimType)i;
+                string stateName = GetStateName(animType);
+                StateAnimData stateData = elementData.GetStateAnim(stateName);
+                if (stateData == null || stateData.p_variations == null || stateData.p_variations.Count == 0)
+                    continue;
+
+                stateClips[animType] = stateData;
+            }
+
+            return stateClips.Count > 0 ? stateClips : null;
+        }
+
+        private string GetStateName(SD.SoldierAnimType animType)
+        {
+            switch (animType)
+            {
+                case SD.SoldierAnimType.IDLE:
+                    return "IDLE";
+                case SD.SoldierAnimType.MOVE:
+                    return "MOVE";
+                case SD.SoldierAnimType.ATTACK:
+                    return "ATTACK";
+                case SD.SoldierAnimType.SKILL:
+                    return "SKILL";
+                case SD.SoldierAnimType.STUN:
+                    return "STUN";
+                case SD.SoldierAnimType.DIE:
+                    return "DIE";
+                case SD.SoldierAnimType.BORN:
+                    return "BORN";
+                default:
+                    return string.Empty;
+            }
+        }
 
         private GameObject GetSoldierFromPool(WE.RaceType raceT, int troopT, int soldierT)
         {
@@ -1063,6 +1136,13 @@ namespace WarField
                                     if ((int)value != j)
                                         GameLogger.LogError($"Load soldier prefab {prefab.name} troop {value} {(int)value}!={j} error");
                                 }
+
+                                //注册动画
+                                property = actualType.GetProperty("IAnimInfo_GetEleAnimId");
+                                object eleAnimId = property.GetValue(scriptComponent);
+                                property = actualType.GetProperty("IAnimInfo_GetStateId");
+                                object stateDic = property.GetValue(scriptComponent);
+                                AnimCtrl.Instance.BindAnimWithEntity((uint)eleAnimId, prefab.name, (Dictionary<string, uint>)stateDic);
                             }
                         }
                         catch (Exception e)
@@ -1603,4 +1683,3 @@ namespace WarField
 #endregion
     }
 }
-
