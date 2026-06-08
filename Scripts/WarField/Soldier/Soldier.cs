@@ -62,11 +62,14 @@ namespace WarField
         protected System.Object _targetLock; //在选择rival时加锁
         protected bool _rivalChanged;
 
-        //buff or skill change the soldier's state, must add lock
-        protected object[] _stateLockArray;
+        // 每个士兵一把锁（替代原来每种状态一把锁，减少 14×N 个堆对象 → N 个，修复瓶颈4）
+        protected object _stateLock;
 
         //_stateChangeArray在soldier init的时候会重新new，如果被其他地方引用了会引起内存泄露，禁止被外部引用 ！！！！
         protected List<SoldierStateChange>[] _stateChangeArray;
+
+        // 静态对象池：跨所有士兵实例共享，彻底消除 AddStateChange 时的每帧堆分配
+        private static readonly Queue<SoldierStateChange> s_changePool = new Queue<SoldierStateChange>(1024);
 
         // init in solider instance InitSoldier, e.g. Infantry.InitSoldier
         //and it not the conf get fomr soldier ctrl, but a new conf init by the conf from the soldier ctrl
@@ -103,21 +106,9 @@ namespace WarField
         //animation
         // 在texture2dArray中寻址所需的当前播放的帧动画
         protected int _currentDirIndex = 0; //帧动画的方向
-        protected int _currentFrameIndex = 0;
-        protected float _frameTimer = 0f;
-        protected int _lastTriggeredFrame = -1; //防止同一步内重复触发关键帧事件
-        // StateAnimData 存整个状态（含所有变体 + p_isLoop）；int 字典追踪每个动画当前选中的变体索引
-        protected Dictionary<SD.SoldierAnimType, StateAnimData> _animClipConfigDic;
-        protected Dictionary<SD.SoldierAnimType, int> _animCurrentVariantIdxDic;
         protected SD.SoldierAnimType _curAnimType; //the animation is playing now
         protected Skill _skillInAnim; //point to the skill of the animation is playing, call SkillAnimFinish
-        protected bool[] _hasAnim; //does character has SD.SoldierAnimType animation
-        protected MeshRenderer _animRenderer;  //anim mesh render
-        protected MeshFilter _animMeshFilter; //mesh filter
-        protected MaterialPropertyBlock _animMpb; //anim meterial
-
-        // 所有序列帧的边界,用于在动画shdaer中裁剪掉序列帧中透明部分
-        protected List<Vector4> _bakedUVBoundsList;
+        protected AnimRenderProxy _animProxy;
 
         //half of soldier body size, used for calculate the bullect shoot out  position
         protected Vector2 _halfBodySize;
@@ -283,12 +274,6 @@ namespace WarField
             _warEleType = WE.WarEleType.SOLDIER;
             _moveSpeed = Vector3.zero;
 
-            Transform animTransform = transform.Find("SoldierAnim");
-            _animRenderer = animTransform.GetComponent<MeshRenderer>();
-            _animMeshFilter = animTransform.GetComponent<MeshFilter>();
-            _animMpb = new MaterialPropertyBlock();
-            _animRenderer.sortingLayerName = "Element";//设置Sorting Layer,因为meshrender 在Inspector中没有这个选项
-
             _halfBodySize = new Vector2(0.5f, 0.5f);
 
             _curStatus = SD.SoldierStatus.INIT; //不能调用ChangeStatusTo,因为这个时候entity还没有被创建出来
@@ -302,8 +287,6 @@ namespace WarField
             _oriAttackInterval = 0;
             _nextAttackInterval = 1; //>0 make sure can call AttackPre() when status change
             _sdConfBeInit = false;
-
-            _hasAnim = new bool[(int)SD.SoldierAnimType.MAX];
 
             //rival searcher
             _rivalSearcher = new SearchClosest(-1, OnClosestRivalFound, GetSearchShape, this, -1);
@@ -361,19 +344,21 @@ namespace WarField
             for (int i = 1; i < (int)BFD.BuffTriggerType.MAX; i++)
 				_buffsInEffect[i] = new List<SoldierBuff>();
 
-            // state change
-            _stateLockArray = new object[(int)SD.StateSoldierEffectType.MAX];
+            _stateLock        = new object();
             _stateChangeArray = new List<SoldierStateChange>[(int)SD.StateSoldierEffectType.MAX];
-            for (int i = 0; i < (int)SD.StateSoldierEffectType.MAX; i++)
-            {
-                _stateLockArray[i] = new object();
-                _stateChangeArray[i] = new List<SoldierStateChange>();
-            }
 
             //behavior
             _behaviorLock = new object();
             _cmdTargetPos = GD.InvalidVector2;
             _body = GetComponent<DynamicBodyAuthoring>();
+
+            //animation
+            Transform animTransform = transform.Find("SoldierAnim");
+            if (animTransform != null)
+            {
+                _animProxy = animTransform.GetComponent<AnimRenderProxy>();
+                _animProxy.InitProxy(this, gameObject, (int)SD.SoldierAnimType.MAX);
+            }
         }
 
 #if UNITY_EDITOR
@@ -563,7 +548,7 @@ namespace WarField
                         }
                         else
                         {
-                            if (_animClipConfigDic.ContainsKey(SD.SoldierAnimType.BORN) == true)
+                            if (_animProxy.gs_hasStateAnim[(int)SD.SoldierAnimType.BORN] == true) //wait born animation finish notification
                                 return; //not check buff or update skill
 
                             _isBorned = true;
@@ -654,7 +639,7 @@ namespace WarField
                             ChangeSearchStatus(false);
                             _prvStatus = _curStatus;
                         }
-                        if (_hasAnim[(int)SD.SoldierAnimType.DIE] == false)
+                        if (_animProxy?.gs_hasStateAnim[(int)SD.SoldierAnimType.DIE] == null)
                         {
                             TriggerDieAction();
                         }
@@ -761,25 +746,6 @@ namespace WarField
             }
 
             _curPhyResistance = SD.GetPhysicsResistance(_curState.p_phyArmor);
-
-            _animClipConfigDic = SoldierCtrl.Instance.GetSoldierAnimClips(_race, gs_troopType, gs_sdType);
-            _animCurrentVariantIdxDic = new Dictionary<SD.SoldierAnimType, int>();
-            //赋值backed mesh
-            Mesh bakedMesh = SoldierCtrl.Instance.GetSoldierBakedMesh(_race, gs_troopType, gs_sdType, _isHero);
-            if (bakedMesh != null)
-                _animMeshFilter.sharedMesh = bakedMesh;
-
-            _hasAnim = new bool[(int)SD.SoldierAnimType.MAX];
-            if (_animClipConfigDic != null)
-            {
-                foreach (SD.SoldierAnimType type in Enum.GetValues(typeof(SD.SoldierAnimType)))
-                {
-                    if (_animClipConfigDic.ContainsKey(type) == true)
-                        _hasAnim[(int)type] = true;
-                }
-            }
-            else
-                GameLogger.LogError($"{gameObject.name}: Fail to get the animation data");
 
             _nextAttackInterval = 0;
             _oriAttackInterval = SD.GetAttackInterval(_curState.p_attackSpeed);
@@ -1045,10 +1011,12 @@ namespace WarField
             oriValue = 0;
 
             //not check _beInited, because some skill may change state in awake
-            SoldierStateChange change = new SoldierStateChange();
+            SoldierStateChange change = RentChange(); // 从对象池取，避免每次 new
             change.p_deltaValue = value;
             change.p_calType = calType;
-            lock (_stateLockArray[(int)stateType])
+            if (_stateChangeArray[(int)stateType] == null)
+                _stateChangeArray[(int)stateType] = new List<SoldierStateChange>();
+            lock (_stateLock)
             {
                 switch (stateType)
                 {
@@ -1155,15 +1123,7 @@ namespace WarField
                         _stateChangeArray[(int)stateType].Add(change);
                         value = Utils.CalDeltaValue(oriValue, value, calType);
                         _curState.p_bodyHide = value < 0;
-
-                        //使用 MaterialPropertyBlock 控制隐身 Alpha 传递给 Shader
-                        if (_animRenderer != null)
-                        {
-                            _animRenderer.GetPropertyBlock(_animMpb);
-                            _animMpb.SetFloat("_Alpha", _curState.p_bodyHide ? 0.5f : 1.0f);
-                            _animRenderer.SetPropertyBlock(_animMpb);
-                        }
-
+                        _animProxy.ChangeAlpha(_curState.p_bodyHide ? 0.5f : 1.0f);
                         OnStateChanged(stateType, oriValue, value);
                         break;
                     case SD.StateSoldierEffectType.SKILLCOLLIDER:
@@ -1238,7 +1198,10 @@ namespace WarField
             int index = list.IndexOf(changeSt);
             float prvValue = list[index].p_prvState;
             if (isDelete == true)
+            {
+                ReturnChange(changeSt); // 归还对象池，消除 GC（修复瓶颈4）
                 list.RemoveAt(index);
+            }
             else
             {
                 if (calType == GD.CalDeltaType.MIN)
@@ -1256,7 +1219,7 @@ namespace WarField
                 }
             }
 
-            lock (_stateLockArray[(int)stateType]) //lock
+            lock (_stateLock)
             {
                 float oriValue = 0;
                 switch (stateType)
@@ -1345,13 +1308,7 @@ namespace WarField
                             oriValue = 1;
                         float value = CalculateState(list, index, prvValue);
                         _curState.p_bodyHide = value < 0;
-                        if (_animRenderer != null)
-                        {
-                            _animRenderer.GetPropertyBlock(_animMpb);
-                            _animMpb.SetFloat("_Alpha", _curState.p_bodyHide ? 0.5f : 1.0f);
-                            _animRenderer.SetPropertyBlock(_animMpb);
-                        }
-
+                        _animProxy.ChangeAlpha(_curState.p_bodyHide ? 0.5f : 1.0f);
                         OnStateChanged(stateType, oriValue, value);
                         break;
                     case SD.StateSoldierEffectType.SKILLCOLLIDER:
@@ -1704,8 +1661,7 @@ namespace WarField
         //显示/隐藏 士兵的动画
         public void ChangeAnimRender(bool value)
         {
-            if (_animRenderer != null)
-                _animRenderer.enabled = value;
+            _animProxy.ChangeAnimVisible(value);
         }
 
         //这是框选了一群士兵之后调用的
@@ -1796,6 +1752,47 @@ namespace WarField
             return ret;
         }
 
+        // animation event callback
+        public void IAnimInfo_OnAnimEvent(int stateId)
+        {
+            switch (stateId)
+            {
+                case (int)SD.SoldierAnimType.ATTACK:
+                    AttackPost();
+                    break;
+                case (int)SD.SoldierAnimType.DIE:
+                    TriggerDieAction();
+                    break;
+                case (int)SD.SoldierAnimType.SKILL:
+                    if(_skillInAnim != null)
+                        _skillInAnim.SkillAnimTakeEffect("");
+                    break;
+                case -1: //anim finish notification
+                    if (_curAnimType == SD.SoldierAnimType.DIE)
+                    {
+                        TriggerDieAction();
+                        OnSoldierDie();
+                    }
+                    else if (_curAnimType == SD.SoldierAnimType.ATTACK)
+                    {
+                        _nextAttackInterval += _oriAttackInterval;
+                        _curAnimType = SD.SoldierAnimType.MIN; // 重置等待状态机分发
+                    }
+                    else if (_curAnimType == SD.SoldierAnimType.SKILL)
+                    {
+                        _skillInAnim = null;
+                        _curAnimType = SD.SoldierAnimType.MIN;
+                    }
+                    else if (_curAnimType == SD.SoldierAnimType.BORN)
+                    {
+                        _isBorned = true;
+                        _curAnimType = SD.SoldierAnimType.MIN;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
 #endregion
 
 #region private functions
@@ -2553,12 +2550,17 @@ namespace WarField
 
             for (int i = 0; i < (int)SD.StateSoldierEffectType.MAX; i++)
             {
-                _stateChangeArray[i] = new List<SoldierStateChange>();
+                var stList = _stateChangeArray[i];
+                if (stList == null) continue; // 懒初始化：该状态类型本次生命周期从未被 Buff，直接跳过
+                for (int j = 0; j < stList.Count; j++)
+                    ReturnChange(stList[j]);
+                stList.Clear();
             }
 
             _curPhyResistance = 0;
             _oriAttackInterval = 0;
             _nextAttackInterval = 0;
+            _animProxy?.DeinitProxy();
         }
 
 
@@ -2731,59 +2733,25 @@ namespace WarField
             if (_inDebug == true)
                 GameLogger.LogDebug(_sdName + ": play animation " + nextAnim + "  status:" + _curStatus + " current:" + _curAnimType);
             _curAnimType = nextAnim; //record _curAnimType
-		    _frameTimer = 0f;
-		    _currentFrameIndex = 0;
-		    _lastTriggeredFrame = -1;
-            SelectRandomAnimVariation(_curAnimType);
 
-		    if (!_animClipConfigDic.ContainsKey(_curAnimType))
+		    // 注意 C# 优先级: ! 高于 ==。曾经写成 `!_animProxy.gs_hasStateAnim[...] == false`
+		    // 实际等价于 `_animProxy.gs_hasStateAnim[...] == true`，把所有有动画的 state 都误判为没动画并 reset，
+		    // 导致 ChangeAnimState/ChangeDirection 永远调不到、动画不播、方向锁在默认值。
+		    if (_animProxy.gs_hasStateAnim[(int)_curAnimType] == false)
 		    {
 		        _curAnimType = SD.SoldierAnimType.MIN;
-		    }
+                return false;
+            }
 
+            _animProxy.ChangeAnimState((int)_curAnimType);
 		    return true;
 		}
 
-        protected void SelectRandomAnimVariation(SD.SoldierAnimType animType)
-        {
-            if (_animClipConfigDic == null || _animCurrentVariantIdxDic == null)
-                return;
-
-            if (!_animClipConfigDic.TryGetValue(animType, out var stateData) ||
-                stateData == null || stateData.p_variations == null || stateData.p_variations.Count == 0)
-                return;
-
-            int count = stateData.p_variations.Count;
-            _animCurrentVariantIdxDic[animType] = count == 1 ? 0 : UnityEngine.Random.Range(0, count);
-        }
-
-        // 每帧驱动当前动作的帧步进与寻址合并执行
+        // 计算方向和帧率
         protected void UpdateFrameAnimation(float deltaTime)
         {
             if (_curAnimType == SD.SoldierAnimType.MIN)
                 return;
-
-            if (!_animClipConfigDic.TryGetValue(_curAnimType, out var stateData))
-            {
-                if (_inDebug)
-					GameLogger.LogError($"{_sdName} not has anim {_curAnimType}");
-                return;
-            }
-
-            if (stateData.p_variations == null || stateData.p_variations.Count == 0)
-                return;
-
-            // 取当前随机选中的变体；未设置则默认 0
-            int varIdx = (_animCurrentVariantIdxDic != null &&
-                          _animCurrentVariantIdxDic.TryGetValue(_curAnimType, out int vi)) ? vi : 0;
-            if (varIdx >= stateData.p_variations.Count) varIdx = 0;
-            VariationAnimData varData = stateData.p_variations[varIdx];
-
-            if (varData.p_animStartOffset == null || varData.p_animStartOffset.Count == 0)
-                return;
-
-            // 方向超界时回退到 Dir_0
-            int safeDir = _currentDirIndex < varData.p_animStartOffset.Count ? _currentDirIndex : 0;
 
             // 考虑动画本身的播放速率调节（例如攻击速度、移动速度加成影响表现层）
             float speedModifier = 1.0f;
@@ -2791,45 +2759,7 @@ namespace WarField
                 speedModifier = _curState.p_moveSpeed;
             else if (_curAnimType == SD.SoldierAnimType.ATTACK)
                 speedModifier = _curState.p_attackSpeed;
-
-            _frameTimer += deltaTime * varData.p_frameRate * speedModifier;
-
-            int nextFrame = (int)_frameTimer;
-
-            // 处理动画事件触发时机 (替代旧的 Spine 事件监听)
-            if (nextFrame != _currentFrameIndex)
-            {
-                if (varData.p_eventFrame != -1 && nextFrame >= varData.p_eventFrame && _lastTriggeredFrame < varData.p_eventFrame)
-                {
-                    OnAnimEvent(varData.p_eventFrame);
-                    _lastTriggeredFrame = varData.p_eventFrame;
-                }
-            }
-
-            // 处理生命周期完结、循环与打断
-            // p_isLoop 已提升至 StateAnimData，该状态下所有变体共享同一循环设置
-            if (nextFrame >= varData.p_animFrameCount)
-            {
-                if (stateData.p_isLoop)
-                {
-                    // 环绕保留亚帧越界量, 否则帧 0 每轮循环都会比其它帧多停一个 FixedUpdate tick,
-                    // 在行走/待机这类高频循环动画里就是肉眼可见的"特定一帧卡顿".
-                    // 用 fmod 而非简单减一次, 兼容极高 speedModifier 单 tick 推进 > 1 帧的极端情况.
-                    _frameTimer -= varData.p_animFrameCount * Mathf.Floor(_frameTimer / varData.p_animFrameCount);
-                    _currentFrameIndex = (int)_frameTimer;
-                    _lastTriggeredFrame = -1;
-                }
-                else
-                {
-                    // 非循环动画播放完成
-                    OnAnimFinish();
-                    return;
-                }
-            }
-            else
-            {
-                _currentFrameIndex = nextFrame;
-            }
+            _animProxy.ChangeAnimRate(speedModifier);
 
             // 锁定朝向
             if (_curStatus == SD.SoldierStatus.MOVE) //因为_desiredMoveDir是在jobs中计算的,会被每帧清空
@@ -2862,57 +2792,7 @@ namespace WarField
                     _currentDirIndex = CalculateDirectionIndex(lookDir);
                 }
             }
-
-            // 帧图片寻址：p_animStartOffset[dirIndex] 是该方向在 Texture2DArray 中的绝对起始切片
-            int finalSliceIndex = varData.p_animStartOffset[safeDir] + _currentFrameIndex;
-
-            // 更新材质
-            if (_animRenderer != null)
-            {
-                _animRenderer.GetPropertyBlock(_animMpb);
-                _animMpb.SetFloat("_FinalSliceIndex", finalSliceIndex);
-                _animRenderer.SetPropertyBlock(_animMpb);
-            }
-        }
-
-        //帧动画过程中的事件
-        protected void OnAnimEvent(int frame)
-        {
-            if (_curAnimType == SD.SoldierAnimType.ATTACK)
-                AttackPost();
-            else if (_curAnimType == SD.SoldierAnimType.DIE)
-                TriggerDieAction();
-            else if (_curAnimType == SD.SoldierAnimType.SKILL && _skillInAnim != null)
-                _skillInAnim.SkillAnimTakeEffect("");
-        }
-
-        //帧动画b播放完成
-        protected void OnAnimFinish()
-        {
-            if (_curAnimType == SD.SoldierAnimType.DIE)
-            {
-                TriggerDieAction();
-                OnSoldierDie();
-            }
-            else if (_curAnimType == SD.SoldierAnimType.ATTACK)
-            {
-                _nextAttackInterval += _oriAttackInterval;
-                _curAnimType = SD.SoldierAnimType.MIN; // 重置等待状态机分发
-            }
-            else if (_curAnimType == SD.SoldierAnimType.SKILL)
-            {
-                _skillInAnim = null;
-                _curAnimType = SD.SoldierAnimType.MIN;
-            }
-            else if (_curAnimType == SD.SoldierAnimType.BORN)
-            {
-                _isBorned = true;
-                _curAnimType = SD.SoldierAnimType.MIN;
-            }
-
-            _lastTriggeredFrame = -1;
-            _frameTimer = 0f;
-            _currentFrameIndex = 0;
+            _animProxy.ChangeDirection(_currentDirIndex);
         }
 
         protected virtual void InitBuffArray()
@@ -3202,6 +3082,23 @@ namespace WarField
             _talentTriggerArr[(int)SKD.SkillTriggerType.RIVALLEAVESKILLRANGEDTRIGGER][0].TalentRivalLeave(rival, type);
         }
 
+        //从静态statechange pool中获取一个
+        private static SoldierStateChange RentChange()
+        {
+            lock (s_changePool) {
+                return s_changePool.Count > 0 ? s_changePool.Dequeue() : new SoldierStateChange();
+            }
+        }
+
+        //归还一个到静态pool中
+        private static void ReturnChange(SoldierStateChange sc)
+        {
+            sc.p_prvState = 0f;
+            sc.p_deltaValue = 0f;
+            lock (s_changePool) {
+                s_changePool.Enqueue(sc);
+            }
+        }
 #endregion
     }
 }

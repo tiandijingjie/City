@@ -43,6 +43,11 @@ namespace WarField
         {
             get { return _curLodLvl; }
         }
+
+        public Camera gs_mainCamera
+        {
+            get { return _mainCamera; }
+        }
 #endregion
 
 #region Unity callbacks

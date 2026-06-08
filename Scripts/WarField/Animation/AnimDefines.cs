@@ -93,5 +93,6 @@ namespace WarField.Anim
     {
         public uint IAnimInfo_GetEleAnimId();
         public Dictionary<string, uint> IAnimInfo_GetStateId(); //获取到所有state name->state id的dictionary
+        public void IAnimInfo_OnAnimEvent(int stateId);//事件通知, -1 表示动画结束 Finish, 否者就是对应的stateId
     }
 }

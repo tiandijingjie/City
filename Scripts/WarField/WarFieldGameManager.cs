@@ -243,7 +243,7 @@ namespace WarField
             SearchManager.Instance.InitSearchManager();
 			SystemCfgMgr.Instance.InitSysCfg();
 			Utils.CreateRandomPool();
-			WarResCtrl.Instance.InitWarRes();
+            WarResCtrl.Instance.InitWarRes();
 			WarBuildingCtrl.Instance.InitWarBuildingCtrl();
 			SoldierCtrl.Instance.InitSoldierCtrl();
 			WeaponCtrl.Instance.InitWeaponCtrl();

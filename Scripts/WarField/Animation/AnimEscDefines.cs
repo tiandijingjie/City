@@ -38,11 +38,33 @@ namespace WarField.Anim
         public int p_currentVariationIndex;
         public int p_currentDirectionIndex;
 
-        public float p_elapsedTime;
+        public float p_elapsedTime;  //是计算在一个循环之内的时间的累加,不是总的时间, 比如运行了1.5个循环了,这个时间就是0.5个循环的时间
         public int p_currentFrameIndex;
         public int p_targetTextureSliceIndex;
 
         // 用于有多个variation是计算随机数
         public Unity.Mathematics.Random p_random;
+
+        public int p_eventTriggerCount;
+        public int p_finishCount;
+
+        public float p_animRate;
+
+        // 渲染快照槽位 (稳定，不随 Entity.Index 复用变化)。-1 表示未注册。
+        // 由 AnimCtrl 在 Register/Unregister 时通过 SetComponentData 维护。
+        public int p_renderSlot;
+
+        // 缓存 BlobElementData.p_states 中匹配 currentStateId 的索引，
+        // 消除 AnimUpdateJob 每帧线性查找。-1 表示未缓存。
+        public int p_cachedStateIndex;
+    }
+
+    // 向ECS层批量传递动画状态的跟新, state的变化或者dir的变化, 与entity的增删没有关系
+    public struct AnimSyncCommand
+    {
+        public Entity p_targetAnimEntity;
+        public uint p_stateId;
+        public int p_directionIndex;
+        public float p_animRate;
     }
 }

@@ -92,7 +92,7 @@ namespace WarField
         private Queue<SearchJobContext> _contextPool = new Queue<SearchJobContext>();
 
         private readonly List<SearchClosest> _mapClosests = new List<SearchClosest>(1024);
-        private readonly List<SearchArea>    _mapAreas    = new List<SearchArea>(64);
+        private readonly List<SearchArea>  _mapAreas    = new List<SearchArea>(64);
         private readonly List<IGridNode> _syncAreas = new List<IGridNode>(64);
         private readonly List<IGridNode> _dispatchList = new List<IGridNode>(32);
 
