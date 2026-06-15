@@ -122,9 +122,6 @@ namespace WarField
         protected SD.MoveCmd _curMoveCmd = SD.MoveCmd.MIN, _prvMoveCmd = SD.MoveCmd.MIN;
         protected Vector2 _cmdTargetPos = GD.InvalidVector2; // 指令目标坐标或方向
 
-        //map
-        protected Vector2 _mapBase; //所处map的左下角坐标
-
         //searchers
         protected SearchClosest _rivalSearcher; //用于查找距离最近的rival
         protected SearchShapeDef _rivalSearchShape; //查找rival的范围
@@ -289,7 +286,7 @@ namespace WarField
             _sdConfBeInit = false;
 
             //rival searcher
-            _rivalSearcher = new SearchClosest(-1, OnClosestRivalFound, GetSearchShape, this, -1);
+            _rivalSearcher = new SearchClosest(-1, OnClosestRivalFound, GetSearchShape, this, -1); //mapid先设置成-1, 在init的时候再赋值
             _rivalSearcher.p_getExcludeCall = GetExcludeGridIndices;
             _rivalSearchShape = new SearchShapeDef();
             _rivalSearchShape.p_shapeType = SearchDefines.SearchShapeType.CIRCLE;
@@ -770,9 +767,8 @@ namespace WarField
             _arrivalStuckTimer = 0f; // 重置敏捷计时器
             _animMoveDirEMA = Vector2.zero; // 复位动画方向滤波器, 防止从池子里复用时拿到上次的残留方向
 
-            _mapBase = WarMapCtrl.Instance.GetMapByIndex(mapId).gs_passablePart.min;
             _entityData.p_position = (Vector2)_transform.position;
-            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapBase.y));
+            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapPassableBase.y));
             ChangeSearchStatus(false); //先关闭索敌
             _rivalSearcher.p_mapId = mapId;
             SearchManager.Instance.UnregisterSearch(_rivalSearcher);
@@ -1704,8 +1700,7 @@ namespace WarField
         public override void ChangeMapId(byte mapId)
         {
             base.ChangeMapId(mapId);
-            _mapBase = WarMapCtrl.Instance.GetMapByIndex(_mapId).gs_passablePart.min;
-            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapBase.y));
+            _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, _mapPassableBase.y));
         }
 
         //被嘲讽
@@ -2038,19 +2033,18 @@ namespace WarField
                     }
                     else
                     {
-                        // 单体/英雄移动：走 A* 寻路
+                        // 单体移动：走 A* 寻路
                         if (pathMap != null)
                         {
                             _pathRecalculateCooldown -= deltaTime;
                             Vector2 currentPos = _transform.position;
 
-                            var a = math.distancesq(_cmdTargetPos, _lastAStarTargetPos);
                             bool isTargetChanged = _lastAStarTargetPos == GD.InvalidVector2 || math.distancesq(_cmdTargetPos, _lastAStarTargetPos) > 0.1f;
 
                             // 如果是新目标点，立即拉线计算
                             if (isTargetChanged)
                             {
-                                _aStarWaypoints = pathMap.FindPathAStar(currentPos, _cmdTargetPos);
+                                _aStarWaypoints = pathMap.FindPathAStar(currentPos, _cmdTargetPos); //在主线程中计算A*寻路
 
                                 // 将终点同步成BSF的计算结果,这样如果点击到不可达的位置也不会出现卡住一直挤的情况了
                                 // 这样当路径走完时，CheckCmdFinished() 就能精准对齐该可达点，从而命令英雄停步！
@@ -2058,7 +2052,6 @@ namespace WarField
                                 {
                                     _cmdTargetPos = _aStarWaypoints[_aStarWaypoints.Count - 1];
                                 }
-                                // ====================================================================
 
                                 _lastAStarTargetPos = _cmdTargetPos;
                                 _currentWaypointIndex = 0;
@@ -2066,7 +2059,7 @@ namespace WarField
 
                                 if (_aStarWaypoints.Count == 0)
                                 {
-                                    GameLogger.LogError($"[A* 寻路失败] 目标点不可达！英雄位置: {currentPos}, 鼠标点击目标点: {_cmdTargetPos}。请检查点击处是否为障碍物内部。");
+                                    GameLogger.LogError($"[A* 寻路失败] 目标点不可达！位置: {currentPos}, 鼠标点击目标点: {_cmdTargetPos}。请检查点击处是否为障碍物内部。");
                                 }
                             }
                             // 如果目标点没变，但路径点确实踩完了，在冷却完毕后尝试重新拉线

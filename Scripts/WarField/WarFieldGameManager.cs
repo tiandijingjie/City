@@ -138,6 +138,7 @@ namespace WarField
                     taskData.p_task.RunFixTask(state.dt);
 			}, stateValue);
             SoldierCtrl.Instance.AllSoldierMoveJob(_mapJobs);//确保地图重构完成
+            FarmerCtrl.Instance.AllFarmerMoveJob(_mapJobs);
 		}
 
 		private void Update()
@@ -170,8 +171,9 @@ namespace WarField
         {
             _mapJobs.Complete(); //SearchJobs是每0.1s执行一次,所以不能保证
             SearchManager.Instance.FinishSearchJobs();// 完成上一帧调度的查找 Job 并分发结果（读 NativeArray）
-            // 士兵位置写入 spatial grid（写 NativeArray）
+            // 士兵/农民位置写入 spatial grid（写 NativeArray）
             SoldierCtrl.Instance.SoldiersLaterUpdate();
+            FarmerCtrl.Instance.FarmersLaterUpdate();
 
             //必须确保移动任务和查找任务完成才能进行地图的重构
             JobHandle flowJob = WarMapCtrl.Instance.FlushFlowFieldMaps(); //更新流场寻路地图
@@ -265,10 +267,11 @@ namespace WarField
             yield return null; //等待下一帧
             SoldierCtrl.Instance.StartWork();  //soldier must call firstly
             WarBuildingCtrl.Instance.StartWork();
+            PopulationSystem.Instance.InitPopulationSystem(); //population system must init before farmer system
+            FarmerCtrl.Instance.InitFarmerCtrl();
 
-            WarResCtrl.Instance.AddOcularStoneAt(SoldierDefines.SoldierLevel.BASICLEVEL, Vector2.zero, WE.OnGroundMapIndex);
-            WarResCtrl.Instance.AddOcularStoneAt(SoldierDefines.SoldierLevel.BASICLEVEL, new Vector2(0.1f, 0.1f), WE.OnGroundMapIndex);
-            WarResCtrl.Instance.AddOcularStoneAt(SoldierDefines.SoldierLevel.BASICLEVEL, new Vector2(0.1f, -0.1f), WE.OnGroundMapIndex);
+            //for debug
+            WarResCtrl.Instance.AddPickableResAt(SoldierDefines.SoldierLevel.BASICLEVEL, Vector2.zero, WE.OnGroundMapIndex, 4);
 		}
 
         private void MergeQueue(int queueId)

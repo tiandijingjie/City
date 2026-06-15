@@ -191,6 +191,30 @@ namespace WarField
         }
     }
 
+    // 一次性查询可拾取资源中距离最近的（无范围限制，供农民等单位请求使用）
+    // 调用方通过 SearchManager.RegisterResSearch 提交后，由 SearchManager 在帧末统一处理
+    public class SearchResClosest
+    {
+        public float2 p_searchPos;
+        public int p_mapId;
+        public bool p_isEnabled;
+        public ICollectResListener p_listener;
+        /// <summary>
+        /// 过滤资源类型，对应 ResEntityData.p_type（即 WarResDefine.ResTypes 强转 byte）。
+        /// 0 表示不过滤，接受任意类型。
+        /// </summary>
+        public byte p_resType;
+
+        public SearchResClosest(float2 searchPos, int mapId, ICollectResListener listener, byte resType = 0)
+        {
+            p_searchPos = searchPos;
+            p_mapId = mapId;
+            p_listener = listener;
+            p_isEnabled = true;
+            p_resType = resType;
+        }
+    }
+
     // 将 LayerMask 查询条件集中为 SearchCondition，供 RegisterSearch 使用
     public static class SearchConditionUtil
     {

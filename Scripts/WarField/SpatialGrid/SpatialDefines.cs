@@ -43,6 +43,24 @@ namespace WarField
         public bool p_isDead; // 死亡标记，用于帧末尾安全清理
     }
 
+    public struct ResEntityData
+    {
+        // 空间与状态数据
+        public float2 p_position;
+        public float p_expirationTime; // 过期时间点
+        public bool p_isTargeted;      // 是否已被某个农民锁定
+        public bool p_isActive;        // 是否存活（用于底层数据池的复用判定）
+
+        // 业务属性数据
+        public ushort p_weight;           // 重量（用于农民计算容量：当前负重 + weight <= maxCapacity）
+        public ushort p_value;            // 价值/数量（存入仓库时增加的全局资源量）
+        public byte p_type;         // 资源类型
+
+        // 索引数据
+        public int p_poolIndex;        // 记录自身在 _resPool 中的固定索引，实现 O(1) 的修改
+        public int p_nextTimeoutPoolIndex; // 时间轮静态链表指针：指向同一个时间片触发的下一个资源
+    }
+
     [BurstCompile]
     public struct SpatialQueryHelper
     {
@@ -543,5 +561,86 @@ namespace WarField
     public interface IGridNode
     {
         int gs_gridIndex { get; set; }
+    }
+
+    // 专用于可拾取资源 (ResEntityData) 的空间查询辅助结构
+    // 与 SpatialQueryHelper 并列，由 SpatialGridManager.GetResQueryHelper 构建
+    public struct ResQueryHelper
+    {
+        [ReadOnly] public NativeArray<ResEntityData> p_resPool;
+        [ReadOnly] public NativeParallelMultiHashMap<int, int> p_resGrid;
+
+        public float2 p_mapOrigin;
+        public float p_cellSize;
+        public int p_cols;
+        public int p_rows;
+
+        /// <summary>
+        /// 扩展环搜索：在整张地图上找距离 queryPos 最近的可用（active 且未被锁定）资源。
+        /// resType == 0 表示忽略类型，否则仅匹配 ResEntityData.p_type。
+        /// 返回 _resPool 中的索引；未找到返回 -1。
+        ///
+        /// 算法：从 queryPos 所在格开始向外逐环扩展（Chebyshev 环）。
+        /// 当下一环的最近可能距离 ≥ 当前最优距离时提前退出，保证 O(k) 而非 O(all_cells)。
+        /// </summary>
+        public int FindClosest(float2 queryPos, byte resType = 0)
+        {
+            int bestIndex = -1;
+            float minDistSq = float.MaxValue;
+
+            int centerCol = math.clamp((int)math.floor((queryPos.x - p_mapOrigin.x) / p_cellSize), 0, p_cols - 1);
+            int centerRow = math.clamp((int)math.floor((queryPos.y - p_mapOrigin.y) / p_cellSize), 0, p_rows - 1);
+
+            int maxRing = math.max(p_cols, p_rows); // 最多扩展到覆盖整张地图
+
+            for (int ring = 0; ring <= maxRing; ring++)
+            {
+                // 环 ring 的格子与查询点的最近可能距离 >= (ring-1)*cellSize
+                // 一旦这个下界已超过当前最优距离，后续环不可能更优，提前退出
+                if (ring > 1)
+                {
+                    float nearestPossible = (ring - 1) * p_cellSize;
+                    if (nearestPossible * nearestPossible > minDistSq)
+                        break;
+                }
+
+                int rMin = centerRow - ring;
+                int rMax = centerRow + ring;
+                int cMin = centerCol - ring;
+                int cMax = centerCol + ring;
+
+                for (int row = math.max(0, rMin); row <= math.min(p_rows - 1, rMax); row++)
+                {
+                    for (int col = math.max(0, cMin); col <= math.min(p_cols - 1, cMax); col++)
+                    {
+                        // ring > 0 时只访问边框格子，内部已在更小的环中检查过
+                        if (ring > 0 && row > rMin && row < rMax && col > cMin && col < cMax)
+                            continue;
+
+                        int cellIndex = row * p_cols + col;
+                        if (!p_resGrid.TryGetFirstValue(cellIndex, out int poolIndex, out var it))
+                            continue;
+
+                        do
+                        {
+                            ResEntityData data = p_resPool[poolIndex];
+                            if (!data.p_isActive || data.p_isTargeted)
+                                continue;
+                            if (resType != 0 && data.p_type != resType)
+                                continue;
+
+                            float distSq = math.distancesq(queryPos, data.p_position);
+                            if (distSq < minDistSq)
+                            {
+                                minDistSq = distSq;
+                                bestIndex = poolIndex;
+                            }
+                        } while (p_resGrid.TryGetNextValue(out poolIndex, ref it));
+                    }
+                }
+            }
+
+            return bestIndex;
+        }
     }
 }

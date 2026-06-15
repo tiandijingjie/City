@@ -1,7 +1,9 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Xml;
+using Unity.Collections;
 using UnityEngine;
 
 namespace WarField
@@ -32,13 +34,7 @@ namespace WarField
         [SerializeField] private Sprite[] _stoneSprites; //[WRD.ResContainLevel] 不同等级stone的图片
         [SerializeField] private float _taskInterval = 0.5f;  //RunNormalTask执行间隔时间, 也是时间轮的每个时间片的时长
 
-        // 高级时间轮配置
-        private const int _timeWheelLength = 64;        // 时间轮的槽数,就是时间轮的长度
-        private const int _timeWheelMask = 63;          // 掩码：用于替代 % 64 的极速位运算
-
-        private List<OcularStone>[] _timeWheel;     // 环形数组
-        private int _currentWheelIndex = 0;         // 表针当前位置
-
+		private GameObject _ocularStonePfb;
         private WarResInStoreBase[] _warResArray; //存储的资源
 
         //将res的数量缓存下来，避免太频繁的调用IWarResListener,只有每次update的时候才通知
@@ -53,11 +49,10 @@ namespace WarField
         private List<ResWait>[] _resWaitList; //[WRD.ResTypes]
 
         //ocular stone
-        private List<OcularStone> _ocularStonePool;
+        private List<PickableResBase> _pickableResPool;
         private int _ocularStoneGenerateChance; //生成曈石的概率
         private int[] _basicSdGenerateChance, _highSdGenerateChance, _rareSdGenerateChance; //各个等级的士兵死亡时生成不同等级曈石的概率
 
-        private GameObject _ocularStonePfb;
         //不同丰度曈石中蕴含的能量数量
         private int[] _energyInStone;
         private float _ocularStoneTimeOut;
@@ -66,6 +61,12 @@ namespace WarField
         private Stack<ResWait> _resWaitPool;
 
         private object _glodIncomeChangeLock = new object();
+
+        //ECS 映射 (poolIndex → GameObject, 按需扩容)
+        private PickableResBase[] _activeResMap;
+
+        private Dictionary<int, ICollectResListener> _resLockMap;
+
         private int _loopCnt;
         private bool _beInited;
 #endregion
@@ -87,7 +88,7 @@ namespace WarField
 
         private void Awake()
         {
-            if (ReferenceEquals(Instance, null) == false)
+            if (Instance != null)
             {
                 Destroy(gameObject);
                 return;
@@ -106,12 +107,8 @@ namespace WarField
                 _resLock[i] = new object();
             }
 
-            _ocularStonePool = new List<OcularStone>(128);
+            _pickableResPool = new List<PickableResBase>(128);
 
-            // 初始化时间轮，预分配 64 个槽，永不产生 GC
-            _timeWheel = new List<OcularStone>[_timeWheelLength];
-            for (int i = 0; i < _timeWheelLength; i++)
-                _timeWheel[i] = new List<OcularStone>(16);
             _basicSdGenerateChance = new int[(int)WRD.ResContainLevel.MAX];
             _highSdGenerateChance = new int[(int)WRD.ResContainLevel.MAX];
             _rareSdGenerateChance = new int[(int)WRD.ResContainLevel.MAX];
@@ -121,12 +118,23 @@ namespace WarField
 
             _resWaitPool = new Stack<ResWait>(64);
 
+            // --- 初始化 ECS ResourceGrid ---
+            // 与 ResourceGrid._resPool 容量对齐，避免 AddOcularStoneAt 触发早期扩容
+            _activeResMap = new PickableResBase[ResourceGrid.MAX_RESOURCE_COUNT];
+
+            _resLockMap = new Dictionary<int, ICollectResListener>(128);
+
             _beInited = false;
+        }
+
+        private void OnDestroy()
+        {
+            if (ResourceGrid.Instance != null)
+                ResourceGrid.Instance.Dispose();
         }
 #endregion
 
 #region public functions
-
         public void RunNormalTask(float deltaTime)
         {
             if (!_beInited)
@@ -277,7 +285,8 @@ namespace WarField
         }
 
         //敌方士兵死亡可能产生曈石
-        public bool AddOcularStoneAt(SD.SoldierLevel sdLevel, Vector2 pos, int mapId)
+        //resCnt 在一个位置爆发出很多曈石, 比如boss死了
+        public bool AddPickableResAt(SD.SoldierLevel sdLevel, Vector2 pos, int mapId, int resCnt = 1)
         {
             int chance = Utils.GetRandomInt();
             // if(chance > _ocularStoneGenerateChance)
@@ -313,24 +322,86 @@ namespace WarField
                 }
             }
 
-            OcularStone stone = TakeOcularStoneFromPool();
-            stone.transform.position = pos;
-            stone.InitOcularStone(resContainLevel, pos, mapId, _energyInStone[(int)resContainLevel]);
+            int energy = _energyInStone[(int)resContainLevel];
+            for (int i = 0; i < resCnt; i++)
+            {
+                Vector2 randomOffset = resCnt > 1 ? UnityEngine.Random.insideUnitCircle * 1.5f : Vector2.zero;
+                Vector2 finalPos = pos + randomOffset;
 
-            // 时间轮落槽与圈数计算
-            int ticksNeeded = Mathf.CeilToInt(_ocularStoneTimeOut / _taskInterval);
-            int targetSlot = (_currentWheelIndex + ticksNeeded) & _timeWheelMask;
+                // 写入 ECS 纯数据网格
+                int poolIndex = ResourceGrid.Instance.AddResource(new Unity.Mathematics.float2(finalPos.x, finalPos.y), (int)WRD.ResTypes.OCULARSTONE, 1, energy, _ocularStoneTimeOut, Time.time);
 
-            stone.p_timeWheelLap = ticksNeeded / _timeWheelLength;
-            _timeWheel[targetSlot].Add(stone);
+                if (poolIndex >= 0)
+                {
+                    PickableResBase pr = TakePickableResFromPool();
+                    pr.transform.position = finalPos;
+                    pr.InitPickableResBase(resContainLevel, finalPos, mapId, energy);
+                    pr.gs_entityIndex = poolIndex;
+
+                    SetActiveRes(poolIndex, pr);
+                }
+            }
+
             return true;
         }
 
-        //ReleaseOcularStoneToPool只能在TimeOut调用，
-        //isTaken：是否被hero采集
-        public void ReleaseOcularStoneToPool(OcularStone stone)
+        // 由 ResourceGrid 中超时的实体触发
+        public void HandleExpiredResources(NativeList<int> expiredIndices)
         {
-            _ocularStonePool.Add(stone);
+            for (int i = 0; i < expiredIndices.Length; i++)
+            {
+                int poolIndex = expiredIndices[i];
+                if (poolIndex >= 0 && poolIndex < _activeResMap.Length)
+                {
+                    PickableResBase res = _activeResMap[poolIndex];
+                    if (res != null)
+                        res.TimeOut();
+                }
+            }
+        }
+
+        // 供农民采集，返回资源自身的真实 value
+        public int PickUpRes(int poolIndex)
+        {
+            int value = 0;
+            if (poolIndex < 0 || poolIndex >= _activeResMap.Length)
+                return value;
+
+            PickableResBase res = _activeResMap[poolIndex];
+            if (res == null || !res.gs_isValid)
+                return value;
+
+            var pool = ResourceGrid.Instance.gs_resPool;
+            if (pool[poolIndex].p_isActive)
+                value = pool[poolIndex].p_value;
+
+            if (_resLockMap.ContainsKey(poolIndex))
+                _resLockMap.Remove(poolIndex);
+
+            res.PickUp();
+            return value;
+        }
+
+        // 统一释放（来自超时或被拾取）
+        public void ReleasePickableRes(int poolIndex, PickableResBase pickRes)
+        {
+            if (_resLockMap.TryGetValue(poolIndex, out var listener))
+            {
+                listener.ICollectResListener_OnResourceDisappeared(poolIndex);
+                _resLockMap.Remove(poolIndex);
+            }
+
+            if (poolIndex >= 0)
+            {
+                ResourceGrid.Instance.RemoveResource(poolIndex);
+                SetActiveRes(poolIndex, null);
+            }
+
+            if (pickRes != null)
+            {
+                pickRes.gameObject.SetActive(false);
+                _pickableResPool.Add(pickRes);
+            }
         }
 
         //升级
@@ -362,6 +433,20 @@ namespace WarField
                 return true;
             }
             return false;
+        }
+
+        //不在锁定pickable res, 可能发生在到达不了的情况下
+        public void UnlockPickableRes(int poolIndex, ICollectResListener listener)
+        {
+            // 必须验证自己是不是该资源的合法锁定者
+            if (_resLockMap.TryGetValue(poolIndex, out var currentListener) && currentListener == listener)
+            {
+                _resLockMap.Remove(poolIndex);
+                if (ResourceGrid.Instance != null)
+                {
+                    ResourceGrid.Instance.SetResourceTargeted(poolIndex, false);
+                }
+            }
         }
 
         public void RunFixTask(float deltaTime)
@@ -451,30 +536,6 @@ namespace WarField
 
         private void UpdateRes()
         {
-            // 1. 时间轮步进与 O(1) 批量清理
-            List<OcularStone> slotList = _timeWheel[_currentWheelIndex];
-
-            // 倒序遍历，配合 Swap-And-Pop 实现 0 GC 清理
-            for (int i = slotList.Count - 1; i >= 0; i--)
-            {
-                var stone = slotList[i];
-
-                if (stone.p_timeWheelLap > 0)
-                {
-                    // 圈数没到，减一圈
-                    stone.p_timeWheelLap--;
-                }
-                else
-                {
-                    // 圈数到 0，执行销毁逻辑
-                    stone.TimeOut();
-                    // 不管是不是被taken,都是在这个时候冲
-                    Utils.ExecuteSwapAndPop(slotList, i); //所有的timeout的stone (包括之前被taken,和正在被taken的)都在此时从时间轮中删除
-                }
-            }
-
-            // 指针走一格 (绕回机制)
-            _currentWheelIndex = (_currentWheelIndex + 1) & _timeWheelMask;
             // 金币周期性产出
             _loopCnt--;
             if (_loopCnt <= 0)
@@ -538,20 +599,45 @@ namespace WarField
             }
         }
 
-        private OcularStone TakeOcularStoneFromPool()
+        private void SetActiveRes(int poolIndex, PickableResBase res)
         {
-            int cnt = _ocularStonePool.Count;
+            if (poolIndex >= _activeResMap.Length)
+            {
+                int newSize = Math.Max(poolIndex + 1, _activeResMap.Length * 2);
+                System.Array.Resize(ref _activeResMap, newSize);
+            }
+            _activeResMap[poolIndex] = res;
+        }
+
+        private PickableResBase TakePickableResFromPool()
+        {
+            int cnt = _pickableResPool.Count;
             if (cnt > 0)
             {
-                var ret = _ocularStonePool[cnt - 1];
-                _ocularStonePool.RemoveAt(cnt - 1);
+                var ret = _pickableResPool[cnt - 1];
+                _pickableResPool.RemoveAt(cnt - 1);
                 ret.gameObject.SetActive(true); // 保证取出的是激活状态
                 return ret;
             }
 
             var newObj = Instantiate(_ocularStonePfb, transform);
             newObj.SetActive(true);
-            return newObj.GetComponent<OcularStone>();
+            return newObj.GetComponent<PickableResBase>();
+        }
+
+        //锁定一个pickable 的资源,其他人就搜索不到这个资源了
+        public bool LockPickableRes(int poolIndex, ICollectResListener listener)
+        {
+            if (_resLockMap.ContainsKey(poolIndex))
+                return false;
+
+            var pool = ResourceGrid.Instance.gs_resPool;
+            if (poolIndex < 0 || poolIndex >= pool.Length || !pool[poolIndex].p_isActive || pool[poolIndex].p_isTargeted)
+                return false;
+
+            _resLockMap[poolIndex] = listener;
+            ResourceGrid.Instance.SetResourceTargeted(poolIndex, true);
+            return true;
         }
 #endregion
     }

@@ -9,7 +9,8 @@ using MagicHero;
 
 namespace WarField
 {
-    using WBD = WarBuildingDefines;
+    using FD = FarmerDefines;
+    using WE = WarFieldElements;
 
     public class MainFortress : Fortress
     {
@@ -18,6 +19,8 @@ namespace WarField
 #endregion
 
 #region private parameters
+
+        [SerializeField] private int _th1=15, _th2=75; //不同等级farmer的概率
 
         private HumanDefines.HeroType _heroType = HumanDefines.HeroType.RANGEDHERO;
         private int _skillType = (int)RangedHeroIndividualData.IndividualDataType.FROSTARROW; //英雄的自定义技能
@@ -56,6 +59,27 @@ namespace WarField
             // }
         }
 
+        public bool ProduceFarmer()
+        {
+            float seedY = UnityEngine.Random.Range(-0.6f, -0.1f);
+            float seedX = UnityEngine.Random.Range(-0.3f, 0.3f);
+            Vector2 pos = new Vector2(_transform.position.x + seedX + 1, _transform.position.y + seedY);
+            FD.FarmerLevel level;
+            WE.GenderType gender;
+            int chance = Utils.GetRandomInt();
+            if (chance <= _th1)
+                level = FD.FarmerLevel.LOW;
+            else if (chance > _th2)
+                level = FD.FarmerLevel.HIGH;
+            else
+                level = FD.FarmerLevel.LOW;
+
+            if (chance < 50)
+                gender = WE.GenderType.MAN;
+            else
+                gender = WE.GenderType.WOMAN;
+            return FarmerCtrl.Instance.AddFarmerAt(pos, _mapId, level, gender);
+        }
 #endregion
 
 #region private functions

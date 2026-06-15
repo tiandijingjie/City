@@ -87,6 +87,8 @@ namespace WarField
 
         private Dictionary<int, List<SearchClosest>> _activeClosestSearchers; //mapid -> searchList
         private Dictionary<int, List<SearchArea>> _activeAreaSearchers; //mapid -> searchList
+        private List<SearchResClosest> _pendingResSearchers;  //本帧新收到的资源查找请求
+        private List<SearchResClosest> _queuedResSearchers;   //已提交异步重建，等待下帧结果返回
 
         private List<SearchJobContext> _activeJobContexts = new List<SearchJobContext>();  //每个map的search是一个SearchJobContext, _activeJobContexts中存放所有map的search
         private Queue<SearchJobContext> _contextPool = new Queue<SearchJobContext>();
@@ -97,6 +99,7 @@ namespace WarField
         private readonly List<IGridNode> _dispatchList = new List<IGridNode>(32);
 
         private JobHandle _combinedJobHandle;
+        private JobHandle _resSearchJobHandle;
         private bool _canScheduleJob;
 
         private bool _beInited;
@@ -117,12 +120,15 @@ namespace WarField
             Instance = this;
             _activeClosestSearchers = new Dictionary<int, List<SearchClosest>>();
             _activeAreaSearchers = new Dictionary<int, List<SearchArea>>();
+            _pendingResSearchers = new List<SearchResClosest>(64);
+            _queuedResSearchers  = new List<SearchResClosest>(64);
             _beInited = false;
         }
 
         private void OnDestroy()
         {
             _combinedJobHandle.Complete();
+            _resSearchJobHandle.Complete();
             foreach (var ctx in _activeJobContexts)
                 ctx.DisposeNativeArrays();
             foreach (var ctx in _contextPool)
@@ -202,11 +208,21 @@ namespace WarField
             throw new System.NotImplementedException();
         }
 
+        // 提交一次可拾取资源的最近点查找（无范围限制，在 FinishSearchJobs 中统一处理）
+        public void RegisterResSearch(SearchResClosest searcher)
+        {
+            if (searcher == null || searcher.p_listener == null)
+                return;
+            _pendingResSearchers.Add(searcher);
+        }
+
         // 完成并分发上一帧调度的查找 Job。写入 NativeArray 前必须先调用。
         public void FinishSearchJobs()
         {
             _combinedJobHandle.Complete();
+            _resSearchJobHandle.Complete();
             DispatchJobResults();
+            ProcessResSearches();
         }
 
         // 在实体数据写入完成后再调度新的查找 Job，避免与 ClosestSearchJob 读写冲突。
@@ -217,17 +233,78 @@ namespace WarField
                 PrepareAndScheduleJobs(dependence);
                 _canScheduleJob = false;
             }
+
+            // 资源查找：每帧检查，有请求时按需调度 res grid 重建（与 search tick 无关）
+            if (_pendingResSearchers.Count > 0)
+            {
+                // 仅当数据变脏时才真正调度 BuildResGridJob，否则直接返回依赖句柄（跳过重建）
+                _resSearchJobHandle = SpatialGridManager.Instance.ScheduleResGridRebuild(WE.OnGroundMapIndex, dependence);
+
+                // 将本帧请求移入等待队列，下帧 FinishSearchJobs 完成后统一处理
+                (_pendingResSearchers, _queuedResSearchers) = (_queuedResSearchers, _pendingResSearchers);
+                _pendingResSearchers.Clear();
+            }
         }
 
         // 主线程任意时刻写入网格实体数据前的安全屏障（如状态切换、复活等路径）。
         public void CompletePendingSearchJobs()
         {
             _combinedJobHandle.Complete();
+            _resSearchJobHandle.Complete();
+        }
+
+        public void CompleteResSearchJobs()
+        {
+            _resSearchJobHandle.Complete();
         }
 
 #endregion
 
 #region private functions
+        // 处理上一帧提交的资源查找请求
+        // BuildResGridJob 已作为 _combinedJobHandle 的依赖完成，p_resGrid 可安全读取
+        // 使用 ResQueryHelper 扩展环搜索，充分利用 p_resGrid 的空间索引
+        private void ProcessResSearches()
+        {
+            if (_queuedResSearchers.Count == 0)
+                return;
+            if (ResourceGrid.Instance == null || !ResourceGrid.Instance.gs_resPool.IsCreated)
+            {
+                for (int i = 0; i < _queuedResSearchers.Count; i++)
+                    _queuedResSearchers[i].p_listener?.ICollectResListener_OnResourceNotFound();
+                _queuedResSearchers.Clear();
+                return;
+            }
+
+            // _resSearchJobHandle.Complete() 已在 FinishSearchJobs 中完成，
+            // BuildResGridJob 已结束，p_resGrid 此时可安全读取
+            ResQueryHelper queryHelper = SpatialGridManager.Instance.GetResQueryHelper(WE.OnGroundMapIndex);
+
+            for (int i = 0; i < _queuedResSearchers.Count; i++)
+            {
+                SearchResClosest searcher = _queuedResSearchers[i];
+                if (searcher.p_isEnabled == false || searcher.p_listener == null)
+                    continue;
+
+                // 扩展环搜索，利用 p_resGrid 空间索引，支持 p_resType 过滤
+                int bestIndex = queryHelper.FindClosest(searcher.p_searchPos, searcher.p_resType);
+
+                if (bestIndex != -1)
+                {
+                    ResEntityData best = queryHelper.p_resPool[bestIndex];
+                    ICollectResListener listener = searcher.p_listener;
+                    if (listener.ICollectResListener_OnResourceFound(bestIndex, new UnityEngine.Vector2(best.p_position.x, best.p_position.y)) == true) //返回true 才能锁定资源
+                        WarResCtrl.Instance.LockPickableRes(bestIndex, listener);
+                }
+                else
+                {
+                    searcher.p_listener.ICollectResListener_OnResourceNotFound();
+                }
+            }
+
+            _queuedResSearchers.Clear();
+        }
+
         // 同步查找(主线程直接查)
         private void DoSyncSearch(SearchBase searcher)
         {

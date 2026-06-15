@@ -10,6 +10,7 @@ namespace WarField.Anim
         {
             SOLDIER,
             BUILDING,
+            FARMER,
             VFX
         }
     }

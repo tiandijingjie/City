@@ -18,6 +18,35 @@ namespace WarField
 #endregion
 
 #region private parameters
+        //用来重建resource grid (IJob, 因为资源数量少且必须整体扫描)
+        [BurstCompile(CompileSynchronously = true)]
+        private struct BuildResGridJob : IJob
+        {
+            [ReadOnly] public NativeArray<ResEntityData> p_resPool;
+            public NativeParallelMultiHashMap<int, int> p_resGridMap;
+
+            public float2 p_mapOrigin;
+            public float p_cellSize;
+            public int p_cols;
+            public int p_rows;
+
+            public void Execute()
+            {
+                p_resGridMap.Clear();
+                for (int i = 0; i < p_resPool.Length; i++)
+                {
+                    ResEntityData data = p_resPool[i];
+                    if (!data.p_isActive)
+                        continue;
+                    int col = (int)math.floor((data.p_position.x - p_mapOrigin.x) / p_cellSize);
+                    int row = (int)math.floor((data.p_position.y - p_mapOrigin.y) / p_cellSize);
+                    col = math.clamp(col, 0, p_cols - 1);
+                    row = math.clamp(row, 0, p_rows - 1);
+                    p_resGridMap.Add(row * p_cols + col, i);
+                }
+            }
+        }
+
         //用来重建grid
         [BurstCompile(CompileSynchronously = true)]
         private struct BuildSpatialHashJob : IJobParallelFor
@@ -63,6 +92,13 @@ namespace WarField
             public NativeParallelMultiHashMap<int, int> p_dynamicGrid; //动态grid, 每一帧都会重建
             public NativeParallelMultiHashMap<int, int> p_staticGrid; //静态grid, p_isStaticDirty==true时候会重建
 
+            // 可拾取资源grid (仅 OnGroundMap 使用, 由 InitResGrid 初始化)
+            public NativeParallelMultiHashMap<int, int> p_resGrid;
+            public bool p_isResDirty;
+            public float p_resCellSize;
+            public int p_resCols;
+            public int p_resRows;
+
             public int p_curStaticEntityCount, p_curDynamicEntityCount; //当前地图中的entity的数量,用来判断是不是要对p_spatialGrid扩容
             public bool p_isStaticDirty = true; // 初始为脏，保证第一次会构建静态网格
 
@@ -83,6 +119,8 @@ namespace WarField
                     p_dynamicGrid.Dispose();
                 if (p_staticGrid.IsCreated)
                     p_staticGrid.Dispose();
+                if (p_resGrid.IsCreated)
+                    p_resGrid.Dispose();
             }
         }
 
@@ -525,6 +563,7 @@ namespace WarField
                     jobHandles.Add(staticJob.Schedule(_activeStaticEntityCount, 64));
                     ctx.p_isStaticDirty = false; // 重建后洗白
                 }
+
             }
 
             // 将所有地图的 Job 打包成一个总句柄返回
@@ -537,6 +576,81 @@ namespace WarField
         public void CompletePendingRebuildJob()
         {
             _rebuildJob.Complete();
+        }
+
+        // 为指定地图创建资源空间网格 (由 ResourceGrid.InitResGrid 调用, 仅 OnGroundMap)
+        public void InitResGrid(int mapId, Bounds bounds, float resCellSize)
+        {
+            if (!_mapContexts.TryGetValue(mapId, out var ctx))
+            {
+                GameLogger.LogError($"[SpatialGridManager] Map {mapId} not found when calling InitResGrid!");
+                return;
+            }
+            ctx.p_resCellSize = resCellSize;
+            ctx.p_resCols = Mathf.CeilToInt(bounds.size.x / resCellSize);
+            ctx.p_resRows = Mathf.CeilToInt(bounds.size.y / resCellSize);
+            ctx.p_resGrid = new NativeParallelMultiHashMap<int, int>(4096, Allocator.Persistent);
+            ctx.p_isResDirty = true;
+        }
+
+        // 标记指定地图的资源网格为脏（资源增删/锁定时调用，供 ScheduleResGridRebuild 判断是否需要重建）
+        public void MarkResGridDirty(int mapId)
+        {
+            if (_mapContexts.TryGetValue(mapId, out var ctx) && ctx.p_resGrid.IsCreated)
+                ctx.p_isResDirty = true;
+        }
+
+        // 构建资源查询辅助结构（在 BuildResGridJob 完成后由主线程调用）
+        public ResQueryHelper GetResQueryHelper(int mapId)
+        {
+            if (!_mapContexts.TryGetValue(mapId, out var ctx) || !ctx.p_resGrid.IsCreated)
+                throw new System.Exception($"[SpatialGridManager] Map {mapId} has no res grid!");
+            if (ResourceGrid.Instance == null || !ResourceGrid.Instance.gs_resPool.IsCreated)
+                throw new System.Exception("[SpatialGridManager] ResourceGrid not initialized!");
+
+            return new ResQueryHelper
+            {
+                p_resPool  = ResourceGrid.Instance.gs_resPool,
+                p_resGrid  = ctx.p_resGrid,
+                p_mapOrigin = ctx.p_mapOrigin,
+                p_cellSize = ctx.p_resCellSize,
+                p_cols     = ctx.p_resCols,
+                p_rows     = ctx.p_resRows
+            };
+        }
+
+        // 按需调度资源网格重建 Job（仅在有 SearchResClosest 请求时由 SearchManager 调用）
+        // 若数据未变（p_isResDirty==false），跳过 Job 并直接返回传入的依赖句柄
+        public JobHandle ScheduleResGridRebuild(int mapId, JobHandle dependency = default)
+        {
+            if (!_mapContexts.TryGetValue(mapId, out var ctx) || !ctx.p_resGrid.IsCreated)
+                return dependency;
+            if (!ctx.p_isResDirty)
+                return dependency; // 数据未变，无需重建
+
+            if (ResourceGrid.Instance == null)
+                return dependency;
+            var resPool = ResourceGrid.Instance.gs_resPool;
+            if (!resPool.IsCreated)
+                return dependency;
+
+            if (resPool.Length > ctx.p_resGrid.Capacity)
+            {
+                ctx.p_resGrid.Capacity = resPool.Length * 2;
+                GameLogger.LogWarning($"Map {mapId} res grid capacity enlarged to {ctx.p_resGrid.Capacity}");
+            }
+
+            var job = new BuildResGridJob
+            {
+                p_resPool = resPool,
+                p_resGridMap = ctx.p_resGrid,
+                p_mapOrigin = ctx.p_mapOrigin,
+                p_cellSize = ctx.p_resCellSize,
+                p_cols = ctx.p_resCols,
+                p_rows = ctx.p_resRows
+            };
+            ctx.p_isResDirty = false;
+            return job.Schedule(dependency);
         }
 
         public IGridNode GetGridNode(int eleType, int index)

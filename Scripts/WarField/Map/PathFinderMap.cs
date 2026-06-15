@@ -5,6 +5,7 @@ using UnityEngine;
 using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
+using Unity.Collections.LowLevel.Unsafe;
 
 namespace WarField
 {
@@ -38,7 +39,8 @@ namespace WarField
             public int CompareTo(AStarNode other)
             {
                 int compare = F.CompareTo(other.F);
-                if (compare == 0) return H.CompareTo(other.H);
+                if (compare == 0)
+                    return H.CompareTo(other.H);
                 return compare;
             }
         }
@@ -106,6 +108,26 @@ namespace WarField
 
         // obstacle代价场 只计算一次
         private NativeArray<byte> _staticCostMap;
+
+        // 多源 HomeFlowField：供 farmer GOBACK 使用
+        private NativeList<int> _homeTargetIndices;
+        private NativeArray<int> _emptyTargetIndices; // 供不需要多源的 CalcFlowFieldJob 占位使用
+
+        // 异步 A* 寻路队列系统
+        private struct PathReq
+        {
+            public float2 start;
+            public float2 end;
+            public Action<List<Vector2>> callback;
+        }
+        private Queue<PathReq> _pendingPathReqs = new Queue<PathReq>();
+        private List<PathReq> _activePathReqs = new List<PathReq>();
+        private JobHandle _aStarJobHandle;
+        private bool _isAStarJobRunning = false;
+        private NativeArray<float2> _aStarStarts;
+        private NativeArray<float2> _aStarEnds;
+        private NativeList<float2> _aStarAllPaths;
+        private NativeArray<int2> _aStarPathOffsets;
 #endregion
 
 #region private parameters' get set
@@ -234,6 +256,8 @@ namespace WarField
         {
             // 必须等待 Job 完成才能销毁内存，否则会崩溃
             _flowFieldJobHandle.Complete();
+            _aStarJobHandle.Complete();
+
             if (_flowFieldPool.IsCreated)
                 _flowFieldPool.Dispose();
             if (_costMap.IsCreated)
@@ -242,6 +266,21 @@ namespace WarField
                 _staticCostMap.Dispose();
             if (_flowFieldBlockers.IsCreated)
                 _flowFieldBlockers.Dispose();
+            if (_homeTargetIndices.IsCreated)
+                _homeTargetIndices.Dispose();
+
+            if (_isAStarJobRunning)
+            {
+                if (_aStarStarts.IsCreated)
+                    _aStarStarts.Dispose();
+                if (_aStarEnds.IsCreated)
+                    _aStarEnds.Dispose();
+                if (_aStarAllPaths.IsCreated)
+                    _aStarAllPaths.Dispose();
+                if (_aStarPathOffsets.IsCreated)
+                    _aStarPathOffsets.Dispose();
+            }
+
             _beInited = false;
         }
 
@@ -278,6 +317,12 @@ namespace WarField
             for (int i = WE.LocalFlowFieldStartId; i < _currentMaxFlowFields; i++)
                 _availableFlowIndices.Enqueue(i);
 
+            if (_homeTargetIndices.IsCreated) _homeTargetIndices.Dispose();
+            if (_emptyTargetIndices.IsCreated) _emptyTargetIndices.Dispose();
+            _homeTargetIndices = new NativeList<int>(16, Allocator.Persistent);
+            if (_emptyTargetIndices.IsCreated) _emptyTargetIndices.Dispose();
+            _emptyTargetIndices = new NativeArray<int>(0, Allocator.Persistent);
+
             BakeStaticObstacles();
             // 在主线程直接跑一次专属的静态代价场多维泛洪烘焙 Job
             var staticBakeJob = new BakeStaticCostMapJob
@@ -308,20 +353,18 @@ namespace WarField
         //需要在lastupdate里面调用
         public JobHandle FlushFlowFieldMap()
         {
-            //如果没有建筑的增减,就不需要更新流场地图
-            if (!_isFlowFieldDirty || _beInited == false)
-                return default;
+            if (!_beInited) return default;
+
+            UpdateAsyncAStar();
+
+            if (!_isFlowFieldDirty)
+                return _flowFieldJobHandle;
 
             // 添加建筑
             if (_buildingsToAddThisFrame.Count > 0)
             {
-                int cnt = _buildingsToAddThisFrame.Count;
-                for (int i = 0; i < cnt; i++)
-                {
+                for (int i = 0; i < _buildingsToAddThisFrame.Count; i++)
                     _flowFieldBlockers.Add(_buildingsToAddThisFrame[i]);
-                    _blockerCount++;
-                }
-
                 _buildingsToAddThisFrame.Clear();
             }
 
@@ -386,7 +429,6 @@ namespace WarField
         }
 
         //获取一个局部流场
-        //unitCount 使用这个流场的士兵的数量, 必须>1
         //成功时 snappedTargetWorldPos 输出 BFS 吸附后的可走目标坐标，调用方应该用它替代原始点击坐标
         public int RequestLocalFlowField(Vector2 targetWorldPos, int unitCount, out Vector2 snappedTargetWorldPos)
         {
@@ -432,6 +474,7 @@ namespace WarField
                 p_endC = _cols - 1,
                 p_pushDir = 0, // 聚拢模式
                 p_targetIndex = validTargetIndex,
+                p_targetIndices = _emptyTargetIndices,
                 p_defaultDir = float2.zero
             };
 
@@ -582,9 +625,147 @@ namespace WarField
             return path;
         }
 
+        // 提交异步 A* 寻路请求（非阻塞，通过 callback 返回结果）
+        public void RequestPathAStar(Vector2 startWorld, Vector2 endWorld, Action<List<Vector2>> callback)
+        {
+            if (!_beInited || !_costMap.IsCreated)
+            {
+                callback?.Invoke(new List<Vector2>());
+                return;
+            }
+
+            int2 endGrid = WorldToCellCoord(endWorld);
+            int validTargetIndex = FindNearestWalkableCell(endGrid.x, endGrid.y);
+            if (validTargetIndex == -1)
+            {
+                callback?.Invoke(new List<Vector2>());
+                return;
+            }
+
+            int2 snappedEndGrid = CellIndexToCoord(validTargetIndex);
+            Vector2 safeEndWorld = new Vector2(
+                _origin.x + snappedEndGrid.x * _cellSize + _cellSize * 0.5f,
+                _origin.y + snappedEndGrid.y * _cellSize + _cellSize * 0.5f
+            );
+
+            _pendingPathReqs.Enqueue(new PathReq
+            {
+                start = new float2(startWorld.x, startWorld.y),
+                end = new float2(safeEndWorld.x, safeEndWorld.y),
+                callback = callback
+            });
+        }
+
+        // 注册城镇中心到 HomeFlowField 多源集合
+        public void AddTownCenter(Vector2 worldPos)
+        {
+            if (!_beInited || !_costMap.IsCreated) return;
+
+            int2 coord = WorldToCellCoord(worldPos);
+            int validIdx = FindNearestWalkableCell(coord.x, coord.y);
+            if (validIdx != -1 && !_homeTargetIndices.Contains(validIdx))
+            {
+                _homeTargetIndices.Add(validIdx);
+                _isFlowFieldDirty = true;
+            }
+        }
+
+        // 移除城镇中心（容差 ±2 cell）
+        public void RemoveTownCenter(Vector2 worldPos)
+        {
+            if (!_beInited || !_costMap.IsCreated || _homeTargetIndices.Length == 0) return;
+
+            int2 coord = WorldToCellCoord(worldPos);
+            for (int i = 0; i < _homeTargetIndices.Length; i++)
+            {
+                int2 targetCoord = CellIndexToCoord(_homeTargetIndices[i]);
+                if (math.abs(targetCoord.x - coord.x) <= 2 && math.abs(targetCoord.y - coord.y) <= 2)
+                {
+                    _homeTargetIndices.RemoveAtSwapBack(i);
+                    _isFlowFieldDirty = true;
+                    return;
+                }
+            }
+        }
 #endregion
 
 #region private functions
+
+        // 异步 A* Job 的调度与结果回收（每帧在 FlushFlowFieldMap 开头调用）
+        private void UpdateAsyncAStar()
+        {
+            if (_isAStarJobRunning)
+            {
+                if (_aStarJobHandle.IsCompleted)
+                {
+                    _aStarJobHandle.Complete();
+
+                    for (int i = 0; i < _activePathReqs.Count; i++)
+                    {
+                        List<Vector2> path = new List<Vector2>();
+                        int2 offset = _aStarPathOffsets[i];
+                        for (int p = 0; p < offset.y; p++)
+                        {
+                            float2 point = _aStarAllPaths[offset.x + p];
+                            path.Add(new Vector2(point.x, point.y));
+                        }
+
+                        // 如果路径非空，将最后一个点还原为精确点击坐标
+                        if (path.Count > 0 && offset.y > 0)
+                        {
+                            float2 exactEnd = _activePathReqs[i].end;
+                            path[path.Count - 1] = new Vector2(exactEnd.x, exactEnd.y);
+                        }
+
+                        _activePathReqs[i].callback?.Invoke(path);
+                    }
+
+                    _activePathReqs.Clear();
+                    _isAStarJobRunning = false;
+
+                    _aStarStarts.Dispose();
+                    _aStarEnds.Dispose();
+                    _aStarAllPaths.Dispose();
+                    _aStarPathOffsets.Dispose();
+                }
+            }
+
+            // 打包新请求（每帧最多 32 个，防止峰值突刺）
+            if (!_isAStarJobRunning && _pendingPathReqs.Count > 0)
+            {
+                int batchSize = Mathf.Min(_pendingPathReqs.Count, 32);
+                _aStarStarts = new NativeArray<float2>(batchSize, Allocator.Persistent);
+                _aStarEnds = new NativeArray<float2>(batchSize, Allocator.Persistent);
+                _aStarAllPaths = new NativeList<float2>(batchSize * 100, Allocator.Persistent);
+                _aStarPathOffsets = new NativeArray<int2>(batchSize, Allocator.Persistent);
+
+                for (int i = 0; i < batchSize; i++)
+                {
+                    PathReq req = _pendingPathReqs.Dequeue();
+                    _activePathReqs.Add(req);
+                    _aStarStarts[i] = req.start;
+                    _aStarEnds[i] = req.end;
+                }
+
+                var job = new AStarBatchJob
+                {
+                    costMap = _costMap,
+                    startPoints = _aStarStarts,
+                    endPoints = _aStarEnds,
+                    cols = _cols,
+                    rows = _rows,
+                    totalCells = _totalCells,
+                    origin = _origin,
+                    cellSize = _cellSize,
+                    allPaths = _aStarAllPaths,
+                    pathOffsets = _aStarPathOffsets
+                };
+
+                // A* 仅读取 CostMap，必须等待上一帧流场写入结束
+                _aStarJobHandle = job.Schedule(_flowFieldJobHandle);
+                _isAStarJobRunning = true;
+            }
+        }
 
         //释放一个局部流场
         private void ReleaseLocalFlowField(int flowIndex)
@@ -716,6 +897,7 @@ namespace WarField
                 p_endC = (rawSplitColA >= _cols - 1) ? _cols - 1 : splitA,
                 p_pushDir = 1,
                 p_targetIndex = -1,
+                p_targetIndices = _emptyTargetIndices,
                 p_defaultDir = new float2(1, 0)
             };
             // 向左的边缘流场
@@ -730,6 +912,7 @@ namespace WarField
                 p_startC = (rawSplitColB <= 0) ? 0 : splitB, p_endC = _cols - 1,
                 p_pushDir = -1,
                 p_targetIndex = -1,
+                p_targetIndices = _emptyTargetIndices,
                 p_defaultDir = new float2(-1, 0)
             };
 
@@ -752,6 +935,7 @@ namespace WarField
                     p_endC = _cols - 1,
                     p_pushDir = 0,
                     p_targetIndex = cellCastleEnemy,
+                    p_targetIndices = _emptyTargetIndices,
                     p_defaultDir = new float2(-1, 0)
                 };
                 flowWriteChain = jobA_Conv.Schedule(flowWriteChain);
@@ -771,6 +955,7 @@ namespace WarField
                     p_endC = splitB - 1,
                     p_pushDir = 0,
                     p_targetIndex = cellCastleFriendly,
+                    p_targetIndices = _emptyTargetIndices,
                     p_defaultDir = new float2(1, 0)
                 };
                 flowWriteChain = jobB_Conv.Schedule(flowWriteChain);
@@ -788,13 +973,32 @@ namespace WarField
                     p_flowFieldSlice = new NativeSlice<float2>(_flowFieldPool, activeFlowIndex * _totalCells, _totalCells),
                     p_cols = _cols, p_rows = _rows,
                     p_startC = 0, p_endC = _cols - 1,
+                    p_totalCells = _totalCells,
                     p_pushDir = 0, // 聚拢模式
                     p_targetIndex = cellIndex,
+                    p_targetIndices = _emptyTargetIndices,
                     p_defaultDir = float2.zero
                 };
 
                 // 与其他流场计算串行，避免并发写同一个底层 NativeArray 触发 safety 异常
                 flowWriteChain = localJob.Schedule(flowWriteChain);
+            }
+
+            // HomeFlowField：多源流场，供 farmer GOBACK 使用（指向所有已注册的城镇中心）
+            if (_homeTargetIndices.IsCreated && _homeTargetIndices.Length > 0)
+            {
+                var homeJob = new CalcFlowFieldJob
+                {
+                    p_costMap = _costMap,
+                    p_flowFieldSlice = new NativeSlice<float2>(_flowFieldPool, WE.HomeFlowFieldId * _totalCells, _totalCells),
+                    p_cols = _cols, p_rows = _rows, p_totalCells = _totalCells,
+                    p_startC = 0, p_endC = _cols - 1,
+                    p_pushDir = 0,
+                    p_targetIndex = -1,
+                    p_targetIndices = _homeTargetIndices.AsArray(),
+                    p_defaultDir = float2.zero
+                };
+                flowWriteChain = homeJob.Schedule(flowWriteChain);
             }
 
             // 士兵的移动 Job 依赖整个流场写链结束
@@ -1016,6 +1220,7 @@ namespace WarField
 
         public int p_pushDir;     // 1 向右, -1 向左
         public int p_targetIndex; // -1 代表推线，否则是目标建筑格子的一维索引
+        [ReadOnly] public NativeArray<int> p_targetIndices; // 多源目标索引（用于 HomeFlowField）
         public float2 p_defaultDir;
 
         public void Execute()
@@ -1031,7 +1236,21 @@ namespace WarField
                 intField[i] = ushort.MaxValue;
 
             // 找到终点并入队
-            if (p_targetIndex == -1)// 没有终点建筑,终点就是最后一列
+            if (p_targetIndices.IsCreated && p_targetIndices.Length > 0)
+            {
+                // 多源模式：所有城镇中心格子作为起始波前
+                for (int i = 0; i < p_targetIndices.Length; i++)
+                {
+                    int tIdx = p_targetIndices[i];
+                    if (tIdx >= 0 && tIdx < p_totalCells && p_costMap[tIdx] != 255)
+                    {
+                        intField[tIdx] = 0;
+                        queue.Enqueue(tIdx);
+                    }
+                }
+                p_defaultDir = float2.zero; // 多源辐射全图，无需朝向兜底
+            }
+            else if (p_targetIndex == -1)// 没有终点建筑,终点就是最后一列
             {
                 int targetCol = (p_pushDir == 1) ? p_endC : p_startC;
                 for (int r = 0; r < p_rows; r++)
@@ -1457,6 +1676,259 @@ namespace WarField
                     }
                 }
             }
+        }
+    }
+
+    // ================== 异步 A* 批处理 Job ==================
+    [BurstCompile(CompileSynchronously = true)]
+    public struct AStarBatchJob : IJob
+    {
+        [ReadOnly] public NativeArray<byte> costMap;
+        [ReadOnly] public NativeArray<float2> startPoints;
+        [ReadOnly] public NativeArray<float2> endPoints;
+        public int cols, rows, totalCells;
+        public float2 origin;
+        public float cellSize;
+
+        public NativeList<float2> allPaths;
+        public NativeArray<int2> pathOffsets; // x: startIndex in allPaths, y: length
+
+        public void Execute()
+        {
+            NativeArray<int> parentMap = new NativeArray<int>(totalCells, Allocator.Temp);
+            NativeArray<int> gCostMap = new NativeArray<int>(totalCells, Allocator.Temp);
+            NativeArray<byte> stateMap = new NativeArray<byte>(totalCells, Allocator.Temp); // 0: unvisited, 1: open, 2: closed
+            NativeList<int2> openList = new NativeList<int2>(1024, Allocator.Temp); // x: index, y: F-cost
+            NativeList<float2> rawPath = new NativeList<float2>(256, Allocator.Temp);
+            NativeList<float2> smoothedPath = new NativeList<float2>(256, Allocator.Temp);
+
+            NativeArray<int2> neighbors = new NativeArray<int2>(8, Allocator.Temp);
+            neighbors[0] = new int2(0, 1); neighbors[1] = new int2(0, -1);
+            neighbors[2] = new int2(1, 0); neighbors[3] = new int2(-1, 0);
+            neighbors[4] = new int2(1, 1); neighbors[5] = new int2(1, -1);
+            neighbors[6] = new int2(-1, 1); neighbors[7] = new int2(-1, -1);
+
+            NativeArray<int> moveCosts = new NativeArray<int>(8, Allocator.Temp);
+            for (int i = 0; i < 4; i++) moveCosts[i] = 10;
+            for (int i = 4; i < 8; i++) moveCosts[i] = 14;
+
+            for (int req = 0; req < startPoints.Length; req++)
+            {
+                for (int si = 0; si < totalCells; si++) stateMap[si] = 0;
+                openList.Clear();
+                rawPath.Clear();
+                smoothedPath.Clear();
+
+                float2 startPos = startPoints[req];
+                float2 endPos = endPoints[req];
+
+                int2 startGrid = new int2(
+                    math.clamp((int)math.floor((startPos.x - origin.x) / cellSize), 0, cols - 1),
+                    math.clamp((int)math.floor((startPos.y - origin.y) / cellSize), 0, rows - 1)
+                );
+                int2 endGrid = new int2(
+                    math.clamp((int)math.floor((endPos.x - origin.x) / cellSize), 0, cols - 1),
+                    math.clamp((int)math.floor((endPos.y - origin.y) / cellSize), 0, rows - 1)
+                );
+
+                if (startGrid.x == endGrid.x && startGrid.y == endGrid.y)
+                {
+                    WritePath(req, endPos, ref smoothedPath);
+                    continue;
+                }
+
+                int startIndex = startGrid.y * cols + startGrid.x;
+                gCostMap[startIndex] = 0;
+                stateMap[startIndex] = 1;
+                openList.Add(new int2(startIndex, GetHeuristic(startGrid, endGrid)));
+
+                int maxIterations = 1500;
+                int finalTargetIdx = -1;
+
+                while (openList.Length > 0 && maxIterations-- > 0)
+                {
+                    int bestIdxInList = 0;
+                    int minF = openList[0].y;
+                    for (int i = 1; i < openList.Length; i++)
+                    {
+                        if (openList[i].y < minF) { minF = openList[i].y; bestIdxInList = i; }
+                    }
+
+                    int currIndex = openList[bestIdxInList].x;
+                    openList.RemoveAtSwapBack(bestIdxInList);
+                    stateMap[currIndex] = 2; // Closed
+
+                    int2 currPos = new int2(currIndex % cols, currIndex / cols);
+                    if (currPos.x == endGrid.x && currPos.y == endGrid.y)
+                    {
+                        finalTargetIdx = currIndex;
+                        break;
+                    }
+
+                    for (int i = 0; i < 8; i++)
+                    {
+                        int2 nPos = currPos + neighbors[i];
+                        if (nPos.x < 0 || nPos.x >= cols || nPos.y < 0 || nPos.y >= rows) continue;
+
+                        int nIndex = nPos.y * cols + nPos.x;
+                        if (stateMap[nIndex] == 2 || costMap[nIndex] == 255) continue;
+
+                        if (i >= 4) // 穿墙保护
+                        {
+                            int cross1 = currPos.y * cols + nPos.x;
+                            int cross2 = nPos.y * cols + currPos.x;
+                            if (costMap[cross1] == 255 && costMap[cross2] == 255) continue;
+                        }
+
+                        int tentativeG = gCostMap[currIndex] + moveCosts[i];
+                        if (stateMap[nIndex] == 0 || tentativeG < gCostMap[nIndex])
+                        {
+                            parentMap[nIndex] = currIndex;
+                            gCostMap[nIndex] = tentativeG;
+                            int fCost = tentativeG + GetHeuristic(nPos, endGrid);
+                            if (stateMap[nIndex] == 0)
+                            {
+                                stateMap[nIndex] = 1;
+                                openList.Add(new int2(nIndex, fCost));
+                            }
+                            else
+                            {
+                                for (int j = 0; j < openList.Length; j++)
+                                {
+                                    if (openList[j].x == nIndex) { openList[j] = new int2(nIndex, fCost); break; }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (finalTargetIdx != -1)
+                {
+                    int curr = finalTargetIdx;
+                    while (curr != startIndex)
+                    {
+                        int2 p = new int2(curr % cols, curr / cols);
+                        rawPath.Add(new float2(origin.x + p.x * cellSize + cellSize * 0.5f, origin.y + p.y * cellSize + cellSize * 0.5f));
+                        curr = parentMap[curr];
+                    }
+
+                    // 反转路径
+                    for (int i = 0; i < rawPath.Length / 2; i++)
+                    {
+                        float2 temp = rawPath[i];
+                        rawPath[i] = rawPath[rawPath.Length - 1 - i];
+                        rawPath[rawPath.Length - 1 - i] = temp;
+                    }
+
+                    rawPath.Add(float2.zero); // 先扩容1个长度
+                    for (int i = rawPath.Length - 1; i > 0; i--)
+                    {
+                        rawPath[i] = rawPath[i - 1]; // 整体后移一位
+                    }
+
+                    rawPath[0] = startPos;
+                    SmoothPath(ref rawPath, ref smoothedPath);
+                }
+
+                if (smoothedPath.Length > 0)
+                {
+                    smoothedPath.RemoveAt(0); // 去掉起点（即自身当前位置）
+                    WritePath(req, endPos, ref smoothedPath);
+                }
+                else
+                {
+                    pathOffsets[req] = new int2(allPaths.Length, 0);
+                }
+            }
+
+            parentMap.Dispose();
+            gCostMap.Dispose();
+            stateMap.Dispose();
+            openList.Dispose();
+            rawPath.Dispose();
+            smoothedPath.Dispose();
+            neighbors.Dispose();
+            moveCosts.Dispose();
+        }
+
+        private int GetHeuristic(int2 a, int2 b)
+        {
+            int dx = math.abs(a.x - b.x);
+            int dy = math.abs(a.y - b.y);
+            return 10 * (dx + dy) + (14 - 2 * 10) * math.min(dx, dy);
+        }
+
+        private void WritePath(int reqIdx, float2 finalPos, ref NativeList<float2> smoothedPath)
+        {
+            int startIdx = allPaths.Length;
+            for (int i = 0; i < smoothedPath.Length; i++)
+                allPaths.Add(smoothedPath[i]);
+            pathOffsets[reqIdx] = new int2(startIdx, smoothedPath.Length);
+        }
+
+        private void SmoothPath(ref NativeList<float2> raw, ref NativeList<float2> smoothed)
+        {
+            if (raw.Length <= 2)
+            {
+                for (int i = 0; i < raw.Length; i++) smoothed.Add(raw[i]);
+                return;
+            }
+
+            smoothed.Add(raw[0]);
+            int currentIndex = 0;
+            while (currentIndex < raw.Length - 1)
+            {
+                int furthestVisibleIndex = currentIndex + 1;
+                for (int i = currentIndex + 2; i < raw.Length; i++)
+                {
+                    if (CheckLineOfSight(raw[currentIndex], raw[i]))
+                        furthestVisibleIndex = i;
+                    else break;
+                }
+                smoothed.Add(raw[furthestVisibleIndex]);
+                currentIndex = furthestVisibleIndex;
+            }
+        }
+
+        private bool CheckLineOfSight(float2 p1, float2 p2)
+        {
+            float2 localP1 = p1 - origin;
+            float2 localP2 = p2 - origin;
+
+            int x0 = (int)math.floor(localP1.x / cellSize);
+            int y0 = (int)math.floor(localP1.y / cellSize);
+            int x1 = (int)math.floor(localP2.x / cellSize);
+            int y1 = (int)math.floor(localP2.y / cellSize);
+
+            if (x0 == x1 && y0 == y1) return true;
+
+            float dx = localP2.x - localP1.x;
+            float dy = localP2.y - localP1.y;
+
+            int stepX = (dx > 0) ? 1 : ((dx < 0) ? -1 : 0);
+            int stepY = (dy > 0) ? 1 : ((dy < 0) ? -1 : 0);
+
+            float tMaxX = (stepX != 0) ? (((x0 + (stepX > 0 ? 1 : 0)) * cellSize) - localP1.x) / dx : float.MaxValue;
+            float tMaxY = (stepY != 0) ? (((y0 + (stepY > 0 ? 1 : 0)) * cellSize) - localP1.y) / dy : float.MaxValue;
+            float tDeltaX = (stepX != 0) ? (cellSize / math.abs(dx)) : float.MaxValue;
+            float tDeltaY = (stepY != 0) ? (cellSize / math.abs(dy)) : float.MaxValue;
+
+            int currentX = x0;
+            int currentY = y0;
+            int maxDist = math.abs(x1 - x0) + math.abs(y1 - y0) + 1;
+
+            for (int i = 0; i <= maxDist; i++)
+            {
+                if (currentX >= 0 && currentX < cols && currentY >= 0 && currentY < rows)
+                {
+                    if (costMap[currentY * cols + currentX] == 255) return false;
+                }
+                if (currentX == x1 && currentY == y1) break;
+
+                if (tMaxX < tMaxY) { tMaxX += tDeltaX; currentX += stepX; }
+                else { tMaxY += tDeltaY; currentY += stepY; }
+            }
+            return true;
         }
     }
 }

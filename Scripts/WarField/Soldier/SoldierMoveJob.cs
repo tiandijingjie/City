@@ -442,14 +442,14 @@ namespace WarField
                             driveDir = math.normalizesafe(driveDir);
                         else
                         {
-                            // driveDir 与 pushDir 完全反向,投影后归零。
-                            // 用"士兵相对障碍物在切向上的偏移"来决定绕路方向:
-                            // 已经偏在哪一侧就继续往那一侧绕,实现自然分流,避免一堆士兵被同时扭到同一侧。
+                            // driveDir 与 pushDir 完全反向，投影后归零。
+                            // offsetFromObstacle 与 pushDir 同向，dot(offsetFromObstacle, tangent) 恒为 0，
+                            // 改用目标方向在切线上的投影决定绕路侧：往最接近追击目标的方向滑动。
                             float2 tangent = new float2(-pushDir.y, pushDir.x);
-                            float2 offsetFromObstacle = cmd.p_currentPos - neighbor.p_position;
-                            float tangentSide = math.dot(offsetFromObstacle, tangent);
+                            float2 toTarget = cmd.p_targetPos - cmd.p_currentPos;
+                            float tangentSide = math.dot(toTarget, tangent);
 
-                            // 几乎正对着(切向偏移≈0)的情况下,用 gridIndex 的奇偶性打破对称
+                            // 目标方向与切线也垂直时，用 gridIndex 的奇偶性打破对称
                             if (math.abs(tangentSide) < 0.0001f)
                                 tangentSide = ((cmd.p_gridIndex & 1) == 0) ? 1f : -1f;
 

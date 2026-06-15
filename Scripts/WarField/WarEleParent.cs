@@ -223,7 +223,7 @@ namespace WarField
                         _mapChangeObservers[i].OnMapChange(this, prvMapId, _mapId);
                 }
             }
-
+            _mapPassableBase = WarMapCtrl.Instance.GetMapByIndex(_mapId).gs_passablePart.min;
             ChangeMiniMap(prvMapId, _mapId);
         }
 
@@ -304,7 +304,6 @@ namespace WarField
                     return;
                 var miniMap = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId);
                 miniMap.gs_warFieldPanel.gs_warFieldMiniMap.NotifyAddedGameObj(this); //加入新地图
-                _mapPassableBase = WarMapCtrl.Instance.GetMapByIndex(_mapId).gs_passablePart.min;
                 _minimapRatio = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId).gs_warFieldPanel.gs_warFieldMiniMap.gs_ratio;
                 _minimapHideOffset = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId).gs_warFieldPanel.gs_warFieldMiniMap.gs_hideOffset;
                 BindToMiniMapObj(); //与minimap中的图标绑定
@@ -315,7 +314,6 @@ namespace WarField
             {
                 var miniMap = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId);
                 miniMap.gs_warFieldPanel.gs_warFieldMiniMap.NotifyAddedGameObj(this); //加入新地图
-                _mapPassableBase = WarMapCtrl.Instance.GetMapByIndex(_mapId).gs_passablePart.min;
                 _minimapRatio = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId).gs_warFieldPanel.gs_warFieldMiniMap.gs_ratio;
                 _minimapHideOffset = UiMiniMapCtrl.Instance.GetMinimapByMapId(_mapId).gs_warFieldPanel.gs_warFieldMiniMap.gs_hideOffset;
             }

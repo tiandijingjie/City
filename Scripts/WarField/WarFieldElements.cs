@@ -25,6 +25,14 @@ namespace WarField
             MAX,
         }
 
+        public enum GenderType //性别
+        {
+            MIN = 0,
+            MAN,
+            WOMAN,
+            MAX,
+        }
+
         public enum WarEleType
         {
             MIN = 0,
@@ -34,6 +42,7 @@ namespace WarField
             OBSTACLE, //地图中的障碍物
             WEAPON,
             OCULARSTONE,
+            FARMER,
             MAX,
         }
 
@@ -91,7 +100,8 @@ namespace WarField
         //寻路
         public const int FriendlyFlowFieldDefaultId = 0; //默认friendly流场的index
         public const int EnemyFlowFieldDefaultId = 1; //默认enemy流场的index
-        public const int LocalFlowFieldStartId = 2; //局部流场开始的index
+        public const int HomeFlowFieldId = 2; //默认用于farmer提交资源的多源流场
+        public const int LocalFlowFieldStartId = 3; //局部流场开始的index
 
         //覆盖范围显示的颜色
         static public Dictionary<string, Color> CoverColorDict = new Dictionary<string, Color>

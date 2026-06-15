@@ -63,6 +63,11 @@ namespace WarField
             _beInited = false;
         }
 
+        private void OnDestroy()
+        {
+            ResourceGrid.Instance.Dispose();
+        }
+
 #endregion
 
 #region public functions
@@ -79,6 +84,8 @@ namespace WarField
             SpatialGridManager.Instance.InitSpatialGridManager();
             foreach (LevelMap map in _mapDict.Values)
                 SpatialGridManager.Instance.AddGrid(map.gs_mapIndex, map.gs_passablePart, 3); //cell size == 3
+            new ResourceGrid();
+            ResourceGrid.Instance.InitResGrid(GetMapByIndex(WE.OnGroundMapIndex).gs_passablePart); //只在地面地图生成资源grid
 
             foreach (var tmp in _pathFinderMapDict)
             {

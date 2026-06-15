@@ -461,7 +461,7 @@ namespace WarField
                 if (array == null || soldierT >= array.Length)
                     return null;
                 sdPfb = array[soldierT].p_prefab;
-                if (ReferenceEquals(sdPfb, null) == true)
+                if (sdPfb == null)
                 {
                     GameLogger.LogError($"Can not get soldier prefab {raceT} {troopT} {soldierT}");
                     return null;
@@ -515,7 +515,7 @@ namespace WarField
             //敌方士兵死亡生成能量宝石
             if (race != WE.RaceType.Human && race != WE.RaceType.Neutral)
             {
-                WarResCtrl.Instance.AddOcularStoneAt(sdLevel, sd.transform.position, mapId);
+                WarResCtrl.Instance.AddPickableResAt(sdLevel, sd.transform.position, mapId);
             }
         }
 
@@ -978,21 +978,15 @@ namespace WarField
                                         GameLogger.LogError($"Load soldier prefab {prefab.name} troop {value} {(int)value}!={j} error");
                                 }
 
-                                //注册动画
-                                // 注意：本函数在 SoldierCtrl.Awake 里被调到。AnimCtrl.Awake 必须在此之前完成
-                                // （依赖同场景内 GameObject 加载顺序，目前 WarFieldManager 父物体上的 AnimCtrl 早于子 SoldierCtrl）。
-                                // 若以后改变挂载结构出现 NRE 或 BindAnimWithEntity 返回 false，请把 AnimCtrl 显式提到 ScriptExecutionOrder。
                                 if (AnimCtrl.Instance == null)
-                                {
-                                    GameLogger.LogError("AnimCtrl.Instance 在 SoldierCtrl.LoadSoldierPrefab 时还未就绪，动画将无法注册");
-                                }
+                                    GameLogger.LogError("AnimCtrl.Instance not ready");
                                 else
                                 {
                                     IAnimInfo animInfo = scriptComponent as IAnimInfo;
                                     uint eleAnimId = animInfo.IAnimInfo_GetEleAnimId();
                                     Dictionary<string, uint> stateDic = animInfo.IAnimInfo_GetStateId();
                                     if (!AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, prefab.name, stateDic))
-                                        GameLogger.LogWarning($"BindAnimWithEntity 失败：{prefab.name} (eleAnimId={eleAnimId})");
+                                        GameLogger.LogWarning($"BindAnimWithEntity failed：{prefab.name} (eleAnimId={eleAnimId})");
                                 }
                             }
                         }
