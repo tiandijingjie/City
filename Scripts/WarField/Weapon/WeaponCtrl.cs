@@ -1,132 +1,43 @@
-using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Reflection;
+using Unity.Collections;
+using Unity.Entities;
+using Unity.Jobs;
+using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Jobs;
 
 namespace WarField
 {
     using WD = WeaponDefines;
     using WE = WarFieldElements;
-    using SD = SoldierDefines;
 
     public class WeaponCtrl : MonoBehaviour
     {
 #region public parameters
-
         public static WeaponCtrl Instance;
 
+        // --- 表现层同步数据 (直接供 ECS 的 SyncJob 极速写入) ---
+        public NativeArray<float2> p_positions;
+        public NativeArray<float> p_rotations;
+        public TransformAccessArray p_transformAccessArray;
+        public JobHandle p_jobHandle;
 #endregion
 
 #region private parameters
+        // --- GameObject 对象池 ---
+        private List<GameObject> _activeObjects;
+        private List<Entity> _activeEntities;
+        private Queue<GameObject> _pool;
+        private int _capacity = 4096;
 
-        private class WeaponPool
-        {
-            public long p_id; //race<<48 | troop << 32 | type << 16 | user define
-            public GameObject p_prefab; //weapon prefab
-            public List<Projectile> p_pool; //weapon free not in use
-            public System.Object _lock;
-            private WE.RaceType _race;
-
-            public WeaponPool(long id, GameObject prefab, WE.RaceType race)
-            {
-                p_id = id;
-                p_prefab = prefab;
-                p_pool = new List<Projectile>();
-                _lock = new System.Object();
-                _race = race;
-            }
-
-            public Projectile GetProjectile(Transform parentTransform)
-            {
-                Projectile bt = null;
-                lock (_lock)
-                {
-                    if (p_pool.Count > 0)
-                    {
-                        bt = p_pool[p_pool.Count - 1];
-                        p_pool.RemoveAt(p_pool.Count - 1);
-                    }
-                }
-
-                if (ReferenceEquals(bt, null))
-                {
-                    bt = Instantiate(p_prefab, parentTransform).GetComponent<Projectile>();
-                    bt.gs_weaponId = p_id;
-                    bt.gs_race = _race;
-                }
-
-                return bt;
-            }
-
-            public void ReleaseProjectile(Projectile bt)
-            {
-                if (bt != null) //already make sure the id is the same
-                {
-                    lock (_lock)
-                    {
-                        if (p_pool.Contains(bt) == false)
-                            p_pool.Add(bt);
-                    }
-                }
-            }
-        }
-
-        private struct RaceWeaponPool
-        {
-            public WE.RaceType p_race;
-            private Dictionary<long, WeaponPool> _projectileRecordDict;
-
-            public RaceWeaponPool(WE.RaceType race)
-            {
-                if (Utils.IsEnumInRange(race, WE.RaceType.MIN, WE.RaceType.MAX) == true)
-                {
-                    p_race = race;
-                    _projectileRecordDict = new Dictionary<long, WeaponPool>();
-                }
-                else
-                {
-                    p_race = WE.RaceType.MIN;
-                    _projectileRecordDict = null;
-                }
-            }
-
-            public Projectile GetProjectile(long weaponId, GameObject prefab, Transform parentTransform)
-            {
-                _projectileRecordDict.TryGetValue(weaponId, out WeaponPool wp);
-                if (wp == null)
-                {
-                    wp = new WeaponPool(weaponId, prefab, p_race);
-                    _projectileRecordDict.Add(weaponId, wp);
-                }
-
-                return wp.GetProjectile(parentTransform);
-            }
-
-            public void ReleaseProjectile(Projectile bt)
-            {
-                long weaponId = bt.gs_weaponId;
-                _projectileRecordDict.TryGetValue(weaponId, out WeaponPool wp);
-                if (wp != null)
-                    wp.ReleaseProjectile(bt);
-            }
-        }
-
-        private RaceWeaponPool[] _raceWeaponArray; //[race]
-        private AsyncDataPool<Projectile> _projectileInUse;
-
-        private Transform _transform;
-        private object _addLock, _rmLock;
-        private bool _beInited;
-
-#endregion
-
-#region private parameters' get set
-
+        // --- ECS 逻辑层数据 ---
+        private EntityManager _entityManager;
+        private EntityArchetype _bezierArchetype;
+        private EntityArchetype _linearArchetype;
+        private bool _beInited = false;
 #endregion
 
 #region Unity callbacks
-
         private void Awake()
         {
             if (Instance != null)
@@ -134,82 +45,168 @@ namespace WarField
                 Destroy(gameObject);
                 return;
             }
-
             Instance = this;
-            _raceWeaponArray = new RaceWeaponPool[(int)WE.RaceType.MAX];
-            _projectileInUse = new AsyncDataPool<Projectile>();
-            _transform = transform;
-            _addLock = new object();
-            _rmLock = new object();
-            _beInited = false;
+
+            _activeObjects = new List<GameObject>(_capacity);
+            _activeEntities = new List<Entity>(_capacity);
+            _pool = new Queue<GameObject>(_capacity);
+
+            p_positions = new NativeArray<float2>(_capacity, Allocator.Persistent);
+            p_rotations = new NativeArray<float>(_capacity, Allocator.Persistent);
+            p_transformAccessArray = new TransformAccessArray(_capacity);
         }
 
         private void OnDestroy()
         {
-            _projectileInUse?.Dispose();
-        }
+            p_jobHandle.Complete();
 
+            if (p_positions.IsCreated)
+            {
+                p_positions.Dispose();
+            }
+
+            if (p_rotations.IsCreated)
+            {
+                p_rotations.Dispose();
+            }
+
+            if (p_transformAccessArray.isCreated)
+            {
+                p_transformAccessArray.Dispose();
+            }
+        }
 #endregion
 
 #region public functions
-
         public bool InitWeaponCtrl()
         {
-            for (int i = 1; i < (int)WE.RaceType.MAX; i++)
-            {
-                _raceWeaponArray[i] = new RaceWeaponPool((WE.RaceType)i);
-            }
+            _entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
+
+            // 预定义抛物线/单体追踪弹道的内存原型
+            _bezierArchetype = _entityManager.CreateArchetype(
+                typeof(WD.ProjectileBaseComponent),
+                typeof(WD.ProjectilePositionComponent),
+                typeof(WD.BezierMoveComponent),
+                typeof(WD.VfxRenderSlotComponent)
+            );
+
+            // 预定义直线穿透弹道的内存原型
+            _linearArchetype = _entityManager.CreateArchetype(
+                typeof(WD.ProjectileBaseComponent),
+                typeof(WD.ProjectilePositionComponent),
+                typeof(WD.LinearMoveComponent),
+                typeof(WD.VfxRenderSlotComponent)
+            );
 
             _beInited = true;
 
             return true;
         }
 
-        public Projectile GetProjectile(WE.RaceType race, long weaponId, GameObject prefab)
+        // ECS 回收逻辑，返回被交换位置的 Entity 以便更新它的 RenderSlot (必须保证 O(1) 连续性)
+        public Entity ReleaseProjectileAndSwapBack(int slotIndex)
         {
-            if (prefab == null)
-                return null;
+            p_jobHandle.Complete();
 
-            var pj = _raceWeaponArray[(int)race].GetProjectile(weaponId, prefab, _transform);
-            if (pj == null)
-                return null;
-            _projectileInUse.AddItemAsync(pj);
+            GameObject objToRelease = _activeObjects[slotIndex];
+            objToRelease.SetActive(false);
+            _pool.Enqueue(objToRelease);
 
-            return pj;
+            int lastIndex = _activeObjects.Count - 1;
+            Entity movedEntity = Entity.Null;
+
+            if (slotIndex < lastIndex)
+            {
+                GameObject movedObj = _activeObjects[lastIndex];
+                Entity entityToMove = _activeEntities[lastIndex];
+
+                _activeObjects[slotIndex] = movedObj;
+                _activeEntities[slotIndex] = entityToMove;
+                movedEntity = entityToMove;
+
+                p_positions[slotIndex] = p_positions[lastIndex];
+                p_rotations[slotIndex] = p_rotations[lastIndex];
+            }
+
+            _activeObjects.RemoveAt(lastIndex);
+            _activeEntities.RemoveAt(lastIndex);
+            p_transformAccessArray.RemoveAtSwapBack(slotIndex);
+
+            return movedEntity;
         }
 
-        public void ReleaseProjectile(Projectile bt)
+        // 发射贝塞尔类投射物 (合并了组装 ECS 与申请 GameObject 的逻辑)
+        public void FireBezierProjectile(
+            long configId, WE.FactionType faction, float damage,
+            int casterEleType, int casterGridIndex, bool triggerSkill, // <--- 参数增加 casterEleType
+            Vector2 startPos, Vector2 endPos, float maxHeight, float speed,
+            GameObject prefab)
         {
-            WE.RaceType race = bt.gs_race;
-            if (Utils.IsEnumInRange(race, WE.RaceType.MIN, WE.RaceType.MAX) == false)
+            if (_beInited == false)
             {
-                GameLogger.LogError($"Projectile {gameObject.name} race is not valid {race.ToString()}");
                 return;
             }
 
-            if (bt == null)
-                return;
-            _raceWeaponArray[(int)race].ReleaseProjectile(bt);
-            _projectileInUse.RemoveItemAsync(bt);
+            // 创建纯逻辑实体
+            Entity entity = _entityManager.CreateEntity(_bezierArchetype);
+
+            // 写入基础信息 (记录地图与网格索引用于回调)
+            WD.ProjectileBaseComponent baseComp = new WD.ProjectileBaseComponent();
+            baseComp.p_configId = configId;
+            baseComp.p_faction = faction;
+            baseComp.p_baseDamage = damage;
+            baseComp.p_casterEleType = casterEleType;
+            baseComp.p_casterGridIndex = casterGridIndex;
+            baseComp.p_triggerSkill = triggerSkill;
+
+            _entityManager.SetComponentData(entity, baseComp);
+
+            WD.ProjectilePositionComponent posComp = new WD.ProjectilePositionComponent();
+            posComp.p_position = new float2(startPos.x, startPos.y);
+            posComp.p_rotationAngle = 0f;
+            _entityManager.SetComponentData(entity, posComp);
+
+            WD.BezierMoveComponent moveComp = new WD.BezierMoveComponent();
+            moveComp.p_startPos = new float2(startPos.x, startPos.y);
+            moveComp.p_endPos = new float2(endPos.x, endPos.y);
+            moveComp.p_maxHeight = maxHeight;
+            moveComp.p_speed = speed;
+            moveComp.p_progress = 0f;
+            _entityManager.SetComponentData(entity, moveComp);
+
+            // 申请表现层 GameObject
+            int slotIndex = AddProjectile(prefab, entity);
+
+            WD.VfxRenderSlotComponent slotComp = new WD.VfxRenderSlotComponent();
+            slotComp.p_slotIndex = slotIndex;
+            _entityManager.SetComponentData(entity, slotComp);
         }
-
-        //for soldier:   type1:troop  type2:sdType other<100
-        //for building:  type1:bdMode type2:bdType 0>other>100
-        public long GetWeaponID(WE.RaceType race, long type1, long type2, long other, WE.WarEleType eleType)
-        {
-            if (eleType == WE.WarEleType.SOLDIER && (other >= 100 || other < 0))
-                GameLogger.LogError($"Error to get GetWeaponID, Soldier other value bigger then 100, {race} {type1} {type2} {other}");
-            if (eleType == WE.WarEleType.BUILDING && other <= 100)
-                GameLogger.LogError($"Error to get GetWeaponID, Building other value bigger then 100, {race} {type1} {type2} {other}");
-
-            return (((long)race << 48) | ((long)type1 << 32) | ((long)type2 << 16) | (long)other);
-        }
-
 #endregion
 
 #region private functions
+        private int AddProjectile(GameObject prefab, Entity ecsEntity)
+        {
+            p_jobHandle.Complete();
 
+            GameObject obj = null;
+            if (_pool.Count > 0)
+            {
+                obj = _pool.Dequeue();
+            }
+            else
+            {
+                obj = Instantiate(prefab);
+            }
+
+            obj.SetActive(true);
+
+            int slot = _activeObjects.Count;
+            _activeObjects.Add(obj);
+            _activeEntities.Add(ecsEntity);
+            p_transformAccessArray.Add(obj.transform);
+
+            return slot;
+        }
 #endregion
     }
 }
-

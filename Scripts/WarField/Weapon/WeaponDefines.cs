@@ -26,8 +26,9 @@ namespace WarField
             public long p_configId; //waepon的具体类型
             public WE.FactionType p_faction;
             public float p_baseDamage;
-            public int p_mapId; //通过mapid和_gridIndex 才能查询到WarEleParent
+            public int p_casterEleType;
             public int p_casterGridIndex; //发射weapon的_gridIndex, 就是WarEleParent._gridIndex
+            public bool p_triggerSkill; //whether call BullectHit() or ShellHit() to call SkillDoAttackPost()/BuffDoAttackPost()/TalentDoAttackPost()
         }
 
         // 空间与姿态（剥离 GameObject Transform 的核心）

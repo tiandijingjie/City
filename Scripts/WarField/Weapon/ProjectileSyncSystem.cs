@@ -1,3 +1,4 @@
+using System;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
@@ -10,11 +11,22 @@ namespace WarField
 {
     using WD = WeaponDefines;
 
-    // 必须在移动计算完毕后执行
-    [UpdateAfter(typeof(ProjectileMoveSystem))]
+    [UpdateAfter(typeof(ProjectileHitSystem))] // 必须等待命中回调完成后再销毁表现
     public partial class ProjectileSyncSystem : SystemBase
     {
-        // 1. 将 ECS 计算好的数据多线程搬运到 NativeArray 的 Job
+        // 辅助结构体：用于将需要销毁的插槽从大到小排序
+        private struct DestroyItem : IComparable<DestroyItem>
+        {
+            public int p_slot;
+            public Entity p_entity;
+
+            public int CompareTo(DestroyItem other)
+            {
+                return other.p_slot.CompareTo(this.p_slot); // 倒序排序
+            }
+        }
+
+        // 将 ECS 计算好的数据多线程搬运到 NativeArray 的 Job
         [BurstCompile]
         private partial struct WriteTransformDataJob : IJobEntity
         {
@@ -32,7 +44,7 @@ namespace WarField
             }
         }
 
-        // 2. 利用 TransformAccessArray 极速操作 GameObject 的 Job
+        // 利用 TransformAccessArray 极速操作 GameObject 的 Job
         [BurstCompile]
         private struct SyncTransformJob : IJobParallelForTransform
         {
@@ -51,34 +63,33 @@ namespace WarField
 
         protected override void OnUpdate()
         {
-            ProjectileRenderBridge bridge = ProjectileRenderBridge.Instance;
-            if (bridge == null)
-            {
-                return;
-            }
+            WeaponCtrl weaponCtrl = WeaponCtrl.Instance;
 
-            // 1. 收集需要销毁的实体与插槽 (脱离查询体避免报 StructuralChange 错误)
-            NativeList<Entity> destroyList = new NativeList<Entity>(Allocator.TempJob);
-            NativeList<int> slotList = new NativeList<int>(Allocator.TempJob);
+            // 收集需要销毁的实体与插槽 (脱离查询体避免报 StructuralChange 错误)
+            NativeList<DestroyItem> destroyList = new NativeList<DestroyItem>(Allocator.TempJob);
 
             foreach (var (slotComp, entity) in SystemAPI.Query<RefRO<WD.VfxRenderSlotComponent>>().WithAll<WD.ProjectileDestroyTag>().WithEntityAccess())
             {
-                destroyList.Add(entity);
-                slotList.Add(slotComp.ValueRO.p_slotIndex);
+                destroyList.Add(new DestroyItem
+                {
+                    p_slot = slotComp.ValueRO.p_slotIndex,
+                    p_entity = entity
+                });
             }
 
             int destroyCount = destroyList.Length;
             if (destroyCount > 0)
             {
+                destroyList.Sort();
+
                 for (int i = 0; i < destroyCount; i++)
                 {
-                    int slot = slotList[i];
-                    Entity entity = destroyList[i];
+                    int slot = destroyList[i].p_slot;
+                    Entity entity = destroyList[i].p_entity;
 
-                    // 回收表现层对象，并处理内存连续性交换(Swap-Back)
-                    Entity movedEntity = bridge.ReleaseProjectileAndSwapBack(slot);
+                    // 倒序回收，绝对不会影响尚未处理的靠前插槽
+                    Entity movedEntity = weaponCtrl.ReleaseProjectileAndSwapBack(slot);
 
-                    // 如果因为数组填坑移动了某个 GameObject 的插槽，必须同步更新其对应 Entity 的插槽序号
                     if (movedEntity != Entity.Null)
                     {
                         WD.VfxRenderSlotComponent movedSlot = SystemAPI.GetComponent<WD.VfxRenderSlotComponent>(movedEntity);
@@ -86,33 +97,30 @@ namespace WarField
                         SystemAPI.SetComponent(movedEntity, movedSlot);
                     }
 
-                    // 彻底从 ECS 内存中清除纯逻辑实体
                     EntityManager.DestroyEntity(entity);
                 }
             }
 
             destroyList.Dispose();
-            slotList.Dispose();
 
-            // 2. 将存活实体的坐标和旋转写入连续数组 (Burst 加速)
+            // 将存活实体的坐标和旋转写入连续数组 (Burst 加速)
             WriteTransformDataJob writeJob = new WriteTransformDataJob
             {
-                p_positions = bridge.p_positions,
-                p_rotations = bridge.p_rotations
+                p_positions = weaponCtrl.p_positions,
+                p_rotations = weaponCtrl.p_rotations
             };
 
             Dependency = writeJob.ScheduleParallel(Dependency);
 
-            // 3. 调度 Transform 同步 Job (Unity 官方的 TransformAccessArray 多线程操作)
+            // 调度 Transform 同步 Job (Unity 官方的 TransformAccessArray 多线程操作)
             SyncTransformJob syncJob = new SyncTransformJob
             {
-                p_positions = bridge.p_positions,
-                p_rotations = bridge.p_rotations
+                p_positions = weaponCtrl.p_positions,
+                p_rotations = weaponCtrl.p_rotations
             };
 
-            // 把句柄交给桥接器，防止下一帧生命周期错乱
-            bridge.p_jobHandle = syncJob.Schedule(bridge.p_transformAccessArray, Dependency);
-            Dependency = bridge.p_jobHandle;
+            weaponCtrl.p_jobHandle = syncJob.Schedule(weaponCtrl.p_transformAccessArray, Dependency);
+            Dependency = weaponCtrl.p_jobHandle;
         }
     }
 }
