@@ -23,10 +23,11 @@ namespace WarField
         // 投射物基础属性（任何投射物都有）
         public struct ProjectileBaseComponent : IComponentData
         {
-            public long p_configId;
+            public long p_configId; //waepon的具体类型
             public WE.FactionType p_faction;
             public float p_baseDamage;
-            public int p_casterEntityId;
+            public int p_mapId; //通过mapid和_gridIndex 才能查询到WarEleParent
+            public int p_casterGridIndex; //发射weapon的_gridIndex, 就是WarEleParent._gridIndex
         }
 
         // 空间与姿态（剥离 GameObject Transform 的核心）

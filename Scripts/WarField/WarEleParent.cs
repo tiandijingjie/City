@@ -372,7 +372,7 @@ namespace WarField
             SpatialGridManager.Instance.UpdateEntityData(_gridIndex, _entityData);
         }
 
-        //生成enetitydata中的p_spec字段
+        //生成enetitydata中的p_spec字段, 标识一些特殊状态, 例如隐身
         protected virtual byte GetSpatialEntitySpecData()
         {
             return 0;
