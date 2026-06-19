@@ -22,7 +22,7 @@ namespace WarField
        [SerializeField] protected SD.RemoteAttackStartPosition _shootPos; //出手射击的位置
 
        protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-       protected long _weaponId;
+       [SerializeField] protected int _weaponId;
 #endregion
 
 #region private parameters' get set
@@ -43,8 +43,8 @@ namespace WarField
                _shootOffset = new Vector2(value.x, value.y * 2 / 3); //从2/3高度位置出手
            }
 
-           if (_weaponPfb != null)
-               _weaponId = WeaponCtrl.Instance.GetWeaponID(_race, (long)_troopType, (long)_sdType, 1, WE.WarEleType.SOLDIER);
+           if (_weaponPfb == null)
+               GameLogger.LogError($"{name}, not set weapon prefab");
        }
 #endregion
 
@@ -76,18 +76,19 @@ namespace WarField
 
        public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WE.WarEleType rivalType)
        {
-           Projectile bt = WeaponCtrl.Instance.GetProjectile(_race, _weaponId, _weaponPfb);
-           Vector3 startPos = _transform.position + _shootOffset;
-           bt.gs_transform.position = startPos;
+           Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
            Vector2 targetPos = Vector2.zero;
-           if (rivalType == WE.WarEleType.SOLDIER) //shell
+           if (rivalType == WE.WarEleType.SOLDIER)
                targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
            else if (rivalType == WE.WarEleType.BUILDING)
                targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
-           //default for ProjectileTypes.BULLET only, for SHELL  solider need inplemente it self
-           bt.InitProjectile(gameObject, WE.WarEleType.SOLDIER, this, startPos, _rival, rivalType, rivalScript, targetPos, 20f, _faction, damage,
-               _mapId);
+           int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
+           WeaponCtrl.Instance.FireBezierBullet(
+               _weaponId, _faction, damage,
+               _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
+               (int)rivalType, targetGridIndex, true,
+               startPos, targetPos, 20f, 20f, _weaponPfb);
        }
 
 #endregion

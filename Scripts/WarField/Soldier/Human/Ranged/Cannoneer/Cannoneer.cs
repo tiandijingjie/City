@@ -34,19 +34,20 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WarFieldElements.WarEleType rivalType)
         {
-            Projectile bt = WeaponCtrl.Instance.GetProjectile(_race, _weaponId, _weaponPfb);
-            Vector3 startPos = _transform.position + _shootOffset;
-            bt.gs_transform.position = startPos;
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
             Vector2 targetPos = Vector2.zero;
-            if (rivalType == WE.WarEleType.SOLDIER) //shell
+            if (rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
-            else if(rivalType == WE.WarEleType.BUILDING)
+            else if (rivalType == WE.WarEleType.BUILDING)
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
-            bt.InitProjectile(gameObject, WE.WarEleType.SOLDIER, this, startPos, _rival, rivalType, rivalScript,
-                targetPos, 10f, _faction, damage, _shellAttackRange, _otherDamage, _mapId);
 
-            //else if (_rivalType == WE.WarEleType.BUILDING)
-            //bt.InitBullet(gameObject, WE.WarEleType.SOLDIER, this, _rival, startPos, _rivalType, _rivalBuilding, 2f, _faction, _curState.p_damage);
+            int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
+            WeaponCtrl.Instance.FireBezierShell(
+                _weaponId, _faction, damage,
+                _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
+                (int)rivalType, targetGridIndex, true,
+                startPos, targetPos, 20f, 10f,
+                _shellAttackRange, _otherDamage, _weaponPfb);
         }
 
         //Talent设置范围攻击的范围

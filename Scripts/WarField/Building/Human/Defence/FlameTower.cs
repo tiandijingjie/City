@@ -51,17 +51,19 @@ namespace WarField
 #region private functions
         protected override void Attack()
         {
-            if(_canWork == false)
+            if (_canWork == false)
                 return;
 
-            Projectile bt = WeaponCtrl.Instance.GetProjectile(_defenceConf.gs_race, _weaponId, _weaponPfb);
-            Vector3 startPos = _transform.position + _shootOffset;
-            bt.gs_transform.position = startPos;
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
             Vector2 targetPos = ((Soldier)_rivalScript).gs_bullectTargetPos;
+            int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
 
-            bt.InitProjectile(gameObject, WE.WarEleType.BUILDING, this, startPos, _rival, _rivalType, _rivalScript, targetPos, 10f,
-                _defenceConf.gs_faction, _defenceConf.gs_damage, _defenceConf.gs_weaponRange, _defenceConf.gs_damage, _mapId);
-            ((Shell)bt).CanAttackBuilding(false);
+            WeaponCtrl.Instance.FireBezierShell(
+                _weaponId, _defenceConf.gs_faction, _defenceConf.gs_damage,
+                _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
+                (int)WE.WarEleType.SOLDIER, targetGridIndex, true,
+                startPos, targetPos, 20f, 10f,
+                _defenceConf.gs_weaponRange, _defenceConf.gs_damage, _weaponPfb, false);
         }
 
         protected override void OnConfUpgradeNotification(string changeName, float oriValue)

@@ -24,7 +24,7 @@ namespace WarField
         [SerializeField] protected DefenceConf _defenceConf = null; //just the _bdConf
 
         protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        protected long _weaponId;
+        [SerializeField] protected int _weaponId;
 
         protected DataPool<GameObject>[] _rivalInRange;
         protected WE.WarEleType _rivalType;
@@ -152,9 +152,8 @@ namespace WarField
             else if (_defenceConf.gs_faction == WE.FactionType.ENEMY)
                 _shootOffset = new Vector2(0, value.y); //从左上角位置出手
 
-            if (ReferenceEquals(_weaponPfb, null) == false)
-                _weaponId = WeaponCtrl.Instance.GetWeaponID(_defenceConf.gs_race, (long)_defenceConf.gs_mode, (long)_defenceConf.gs_subType, 101,
-                    WE.WarEleType.BUILDING);
+            if (ReferenceEquals(_weaponPfb, null))
+                GameLogger.LogError($"{name}, not set weapon prefab");
             _nextAttackInterval = 0;
 
             //set cover
@@ -328,9 +327,7 @@ namespace WarField
         {
             _nextAttackInterval += _defenceConf.gs_atkSpeedCycle;
 
-            Projectile bt = WeaponCtrl.Instance.GetProjectile(_defenceConf.gs_race, _weaponId, _weaponPfb);
-            Vector3 startPos = _transform.position + _shootOffset;
-            bt.gs_transform.position = startPos;
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
             Vector2 targetPos = Vector2.zero;
             if (_rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)_rivalScript).gs_bullectTargetPos;
@@ -341,16 +338,29 @@ namespace WarField
             if (_isInCave == true)
                 damage += _defenceConf.gs_caveAttackAdd;
 
-            if (damage > 0)
+            if (damage <= 0)
+                return;
+
+            int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
+
+            if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.BULLET)
             {
-                if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.BULLET)
-                    bt.InitProjectile(gameObject, WE.WarEleType.BUILDING, this, startPos, _rival, _rivalType, _rivalScript, targetPos, 20f,
-                        _defenceConf.gs_faction, damage, _mapId);
-                else if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.SHELL)
-                    bt.InitProjectile(gameObject, WE.WarEleType.BUILDING, this, startPos, _rival, _rivalType, _rivalScript, targetPos, 10f,
-                        _defenceConf.gs_faction, damage, _defenceConf.gs_weaponRange, damage, _mapId);
-                //not has NoTargetBullet for now
+                WeaponCtrl.Instance.FireBezierBullet(
+                    _weaponId, _defenceConf.gs_faction, damage,
+                    _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
+                    (int)_rivalType, targetGridIndex, true,
+                    startPos, targetPos, 20f, 20f, _weaponPfb);
             }
+            else if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.SHELL)
+            {
+                WeaponCtrl.Instance.FireBezierShell(
+                    _weaponId, _defenceConf.gs_faction, damage,
+                    _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
+                    (int)_rivalType, targetGridIndex, true,
+                    startPos, targetPos, 20f, 10f,
+                    _defenceConf.gs_weaponRange, damage, _weaponPfb);
+            }
+            //not has NoTargetBullet for now
         }
 
         //choose a new rival

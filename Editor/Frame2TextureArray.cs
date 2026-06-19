@@ -456,7 +456,7 @@ public class Frame2TextureArray : EditorWindow
         // ---- 8. 按扫描顺序回填 state/var/dir clip 偏移 ----
         // 结构说明 (与 AnimDefines.cs 同步):
         //   StateAnimData.p_isLoop              : 循环标志在状态级别, 所有变体共享.
-        //   VariationAnimData.p_frameRate       : 帧率, 变体级别, 所有方向共享.
+        //   VariationAnimData.p_frameRate       : 播放速率倍率, 变体级别, 所有方向共享. 1.0 = 正常速度, 与 AnimCtrl._animFPS 配合使用.
         //   VariationAnimData.p_animFrameCount  : 每方向帧数, 变体内所有方向相同.
         //   VariationAnimData.p_eventFrame      : 关键帧, 变体级别; 帧数变化时自动重置为 -1.
         //   VariationAnimData.p_animStartOffset : List<int>, 每个方向在 Texture2DArray 中的绝对起始切片.
@@ -492,8 +492,8 @@ public class Frame2TextureArray : EditorWindow
             {
                 // ── 变体级继承 ──────────────────────────────────────────────
                 //  p_eventFrame: 帧数不变时继承, 否则重置为 -1.
-                //  p_frameRate:  继承老值, 默认 12f.
-                float inheritedFrameRate = 12f;
+                //  p_frameRate:  继承老值, 默认 1f (速率倍率, 1.0 = 正常速度).
+                float inheritedFrameRate = 1f;
                 int inheritedEventFrame = -1;
                 bool foundOldVar = false;
 
@@ -523,7 +523,7 @@ public class Frame2TextureArray : EditorWindow
 
                 VariationAnimData varConfig = new VariationAnimData
                 {
-                    p_frameRate = foundOldVar ? inheritedFrameRate : 12f,
+                    p_frameRate = foundOldVar ? inheritedFrameRate : 1f,
                     p_animFrameCount = frameCount,
                     p_eventFrame = inheritedEventFrame,
                 };

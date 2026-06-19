@@ -94,12 +94,15 @@ namespace WarField
                 int count = _rivalList.Count;
                 for (int i = 0; i < count; i++)
                 {
-                    Projectile bt = WeaponCtrl.Instance.GetProjectile(_defenceConf.gs_race, _weaponId, _weaponPfb);
-                    Vector3 startPos = _transform.position + _shootOffset;
-                    bt.gs_transform.position = startPos;
-                    Vector2 targetPos = ((Soldier)_rivalScriptList.GetByIndex(i)).gs_bullectTargetPos;
-                    bt.InitProjectile(gameObject, WE.WarEleType.BUILDING, this, startPos, _rivalList.GetByIndex(i), WE.WarEleType.SOLDIER,
-                        _rivalScriptList.GetByIndex(i), targetPos, 20f, _defenceConf.gs_faction, _defenceConf.gs_damage, _mapId);
+                    Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+                    Soldier rivalSd = (Soldier)_rivalScriptList.GetByIndex(i);
+                    Vector2 targetPos = rivalSd.gs_bullectTargetPos;
+                    int targetGridIndex = rivalSd.gs_gridIndex;
+                    WeaponCtrl.Instance.FireBezierBullet(
+                        _weaponId, _defenceConf.gs_faction, _defenceConf.gs_damage,
+                        _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
+                        (int)WE.WarEleType.SOLDIER, targetGridIndex, true,
+                        startPos, targetPos, 20f, 20f, _weaponPfb);
                 }
             }
         }

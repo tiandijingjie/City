@@ -9,6 +9,7 @@ namespace WarField.Anim
     public struct BlobVariationData
     {
         public int p_eventFrame;
+        // 变体级播放速率倍率，1.0 = 正常速度，与 AnimUpdateSystem.s_animFPS 配合使用
         public float p_frameRate;
         public int p_animFrameCount;
         public BlobArray<int> p_animStartOffset;

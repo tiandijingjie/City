@@ -24,7 +24,7 @@ namespace WarField
 
         [SerializeField] private GameObject _skillArrow;
 
-        private long _skillWeaponId; //蓄力击
+        [SerializeField] private int _skillWeaponId; //蓄力击
 
         private bool _needAttackSecondRival;
         private float _secondAttackDamageTimes;
@@ -41,7 +41,6 @@ namespace WarField
         protected override void Awake()
         {
             base.Awake();
-            _skillWeaponId = WeaponCtrl.Instance.GetWeaponID(_race, (long)_troopType, (long)_sdType, 2, WE.WarEleType.SOLDIER);
             _searchSecondRival = new SearchClosest(0, OnSecondTargetFound, GetSearchShape, this, -1); //因为是同步查找,所以不用注册
             _searchSecondRival.p_getExcludeCall = GetExcludeIndices;
             SearchConditionUtil.AddEnemySoldierConditions(_searchSecondRival);
@@ -97,22 +96,24 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WE.WarEleType rivalType)
         {
-            Projectile bt = WeaponCtrl.Instance.GetProjectile(_race, _weaponId, _weaponPfb);
-            Vector3 startPos = _transform.position + _shootOffset;
-            bt.gs_transform.position = startPos;
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
             Vector2 targetPos = Vector2.zero;
-            if (rivalType == WE.WarEleType.SOLDIER) //shell
+            if (rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
-            else if(rivalType == WE.WarEleType.BUILDING)
+            else if (rivalType == WE.WarEleType.BUILDING)
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
-            //default for ProjectileTypes.BULLET only, for SHELL  solider need inplemente it self
-            bt.InitProjectile(gameObject, WE.WarEleType.SOLDIER, this, startPos, _rival, rivalType, rivalScript, targetPos, 20f, _faction, damage, _mapId);
+            int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
+            WeaponCtrl.Instance.FireBezierBullet(
+                _weaponId, _faction, damage,
+                _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
+                (int)rivalType, targetGridIndex, true,
+                startPos, targetPos, 20f, 20f, _weaponPfb);
 
             if (_needAttackSecondRival == true)
             {
                 // Find a second enemy soldier in attack range (excluding the primary rival)
-                _excludeId = (_rivalType == WE.WarEleType.SOLDIER && _rivalScript != null) ? _rivalScript.gs_gridIndex : -1;
+                _excludeId = (_rivalType == WE.WarEleType.SOLDIER && _rivalScript != null) ? ((WarEleParent)_rivalScript).gs_gridIndex : -1;
                 _mainDamage = damage;
                 SearchManager.Instance.RegisterSearch(_searchSecondRival);
             }
@@ -129,36 +130,41 @@ namespace WarField
         {
             if (target != null)
             {
-                Vector3 startPos = _transform.position + _shootOffset;
+                Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
                 Soldier secondTarget = (Soldier)target;
-                Projectile bt2 = WeaponCtrl.Instance.GetProjectile(_race, _weaponId, _weaponPfb);
-                bt2.gs_transform.position = startPos;
-                bt2.InitProjectile(gameObject, WE.WarEleType.SOLDIER, this, startPos,
-                    secondTarget.gameObject, WE.WarEleType.SOLDIER, secondTarget,
-                    secondTarget.gs_bullectTargetPos, 20f, _faction, _mainDamage * _secondAttackDamageTimes, _mapId, false);
+                WeaponCtrl.Instance.FireBezierBullet(
+                    _weaponId, _faction, _mainDamage * _secondAttackDamageTimes,
+                    _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
+                    (int)WE.WarEleType.SOLDIER, secondTarget.gs_gridIndex, false,
+                    startPos, secondTarget.gs_bullectTargetPos, 20f, 20f, _weaponPfb);
                 _needAttackSecondRival = false;
             }
         }
 
-        //射出蓄力击
+        //射出蓄力击 (线性穿透，无特定目标)
         //TODO 需要每一帧去计算箭头范围内的敌人然后造成伤害
         public void SharpShootShootChargeStrike(float distance, float damage)
         {
-            // Projectile bt = WeaponCtrl.Instance.GetProjectile(_race, _skillWeaponId, _skillArrow);
-            // Vector3 startPos = _transform.position + _shootOffset;
-            // bt.gs_transform.position = startPos;
-            //
-            // Vector2 targetPos;
-            // if (_rivalType == WE.WarEleType.SOLDIER)
-            //     targetPos = Utils.CalPosAtDir(startPos, ((Soldier)_rivalScript).gs_bullectTargetPos, distance);
-            // else //target is building,so choose a soldier as a target
-            // {
-            //     Soldier sd = FindClosestEnemySoldierInRange(-1);
-            //     if(sd == null)
-            //         return;
-            //     targetPos = Utils.CalPosAtDir(startPos, sd.gs_bullectTargetPos, distance);
-            // }
-            // bt.InitProjectile(gameObject, WE.WarEleType.SOLDIER, this, startPos, null, _rivalType, null, targetPos, 20f, _faction, damage, _mapId);
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 referencePos;
+
+            if (_rivalScript == null)
+                return;
+
+            if (_rivalType == WE.WarEleType.SOLDIER)
+                referencePos = ((Soldier)_rivalScript).gs_bullectTargetPos;
+            else if (_rivalType == WE.WarEleType.BUILDING)
+                referencePos = ((WarBuilding)_rivalScript).gs_bullectTargetPos;
+            else
+                return;
+
+            Vector2 direction = (referencePos - startPos).normalized;
+
+            WeaponCtrl.Instance.FireLinearNoTarget(
+                _skillWeaponId, _faction, damage,
+                _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
+                startPos, direction, 20f, distance,
+                0.3f, _skillArrow);
         }
 #endregion
     }

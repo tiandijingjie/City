@@ -135,32 +135,119 @@ namespace WarField
             return movedEntity;
         }
 
-        // 发射贝塞尔类投射物 (合并了组装 ECS 与申请 GameObject 的逻辑)
-        public void FireBezierProjectile(
+        // 发射抛物线单体子弹 (如：弓箭、魔法球)
+        //casterGridIndex :发射者的gridIndex
+        public void FireBezierBullet(
             long configId, WE.FactionType faction, float damage,
-            int casterEleType, int casterGridIndex, bool triggerSkill, // <--- 参数增加 casterEleType
-            Vector2 startPos, Vector2 endPos, float maxHeight, float speed,
-            GameObject prefab)
+            int casterMapId, int casterEleType, int casterGridIndex,
+            int targetEleType, int targetGridIndex, bool triggerSkill,
+            Vector2 startPos, Vector2 endPos, float maxHeight, float speed, GameObject prefab)
         {
             if (_beInited == false)
-            {
                 return;
-            }
 
-            // 创建纯逻辑实体
-            Entity entity = _entityManager.CreateEntity(_bezierArchetype);
+            Entity entity = CreateBaseProjectile(_bezierArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
+            AttachTarget(entity, targetEleType, targetGridIndex);
 
-            // 写入基础信息 (记录地图与网格索引用于回调)
+            _entityManager.AddComponentData(entity, new WD.SingleTargetComponent());
+        }
+
+        // 发射抛物线范围炮弹 (如：投石车、迫击炮)
+        // damageRange:伤害范围
+        // otherDamage:主目标之外其他目标的伤害
+        // canAttackBuilding:是否允许伤害建筑
+        public void FireBezierShell(
+            long configId, WE.FactionType faction, float damage,
+            int casterMapId, int casterEleType, int casterGridIndex,
+            int targetEleType, int targetGridIndex, bool triggerSkill,
+            Vector2 startPos, Vector2 endPos, float maxHeight, float speed,
+            float damageRange, float otherDamage, GameObject prefab, bool canAttackBuilding = true)
+        {
+            if (_beInited == false)
+                return;
+
+            Entity entity = CreateBaseProjectile(_bezierArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
+            AttachTarget(entity, targetEleType, targetGridIndex);
+
+            WD.AreaDamageComponent areaComp = new WD.AreaDamageComponent();
+            areaComp.p_damageRange = damageRange;
+            areaComp.p_otherDamage = otherDamage;
+            areaComp.p_canAttackBuilding = canAttackBuilding;
+            _entityManager.AddComponentData(entity, areaComp);
+        }
+
+        // 发射直线单体子弹 (如：火枪、平飞无抛物线的魔法)
+        public void FireLinearBullet(
+            long configId, WE.FactionType faction, float damage,
+            int casterMapId, int casterEleType, int casterGridIndex,
+            int targetEleType, int targetGridIndex, bool triggerSkill,
+            Vector2 startPos, Vector2 direction, float speed, float maxDistance, GameObject prefab)
+        {
+            if (_beInited == false)
+                return;
+
+            Entity entity = CreateBaseProjectile(_linearArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
+            AttachTarget(entity, targetEleType, targetGridIndex);
+
+            _entityManager.AddComponentData(entity, new WD.SingleTargetComponent());
+        }
+
+        // 发射直线穿透技能 (如：风行者强力击、穿透激光)
+        public void FireLinearNoTarget(
+            long configId, WE.FactionType faction, float damage,
+            int casterMapId, int casterEleType, int casterGridIndex,
+            Vector2 startPos, Vector2 direction, float speed, float maxDistance,
+            float colliderRadius, GameObject prefab) // 删除了 maxPierceCount
+        {
+            if (_beInited == false)
+                return;
+
+            Entity entity = CreateBaseProjectile(_linearArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
+            BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
+
+            // 挂载判定范围组件
+            WD.LinearPenetrationComponent penComp = new WD.LinearPenetrationComponent();
+            penComp.p_colliderRadius = colliderRadius;
+            _entityManager.AddComponentData(entity, penComp);
+
+            // 挂载动态记忆数组 (刚发射时是空的)
+            _entityManager.AddBuffer<WD.HitRecordElement>(entity);
+        }
+#endregion
+
+#region private functions
+        // 提取公共基础组件生成，消除重复代码
+        private Entity CreateBaseProjectile(
+            EntityArchetype archetype, long configId, WE.FactionType faction, float damage,
+            int mapId, int casterEleType, int casterGridIndex, bool triggerSkill, GameObject prefab)
+        {
+            Entity entity = _entityManager.CreateEntity(archetype);
+
             WD.ProjectileBaseComponent baseComp = new WD.ProjectileBaseComponent();
             baseComp.p_configId = configId;
             baseComp.p_faction = faction;
             baseComp.p_baseDamage = damage;
+            baseComp.p_mapId = mapId;
             baseComp.p_casterEleType = casterEleType;
             baseComp.p_casterGridIndex = casterGridIndex;
             baseComp.p_triggerSkill = triggerSkill;
-
             _entityManager.SetComponentData(entity, baseComp);
 
+            int slotIndex = AddProjectile(prefab, entity);
+
+            WD.VfxRenderSlotComponent slotComp = new WD.VfxRenderSlotComponent();
+            slotComp.p_slotIndex = slotIndex;
+            _entityManager.SetComponentData(entity, slotComp);
+
+            return entity;
+        }
+
+        // 提取抛物线运动组件组装
+        private void BuildBezierMovement(Entity entity, Vector2 startPos, Vector2 endPos, float maxHeight, float speed)
+        {
             WD.ProjectilePositionComponent posComp = new WD.ProjectilePositionComponent();
             posComp.p_position = new float2(startPos.x, startPos.y);
             posComp.p_rotationAngle = 0f;
@@ -173,17 +260,33 @@ namespace WarField
             moveComp.p_speed = speed;
             moveComp.p_progress = 0f;
             _entityManager.SetComponentData(entity, moveComp);
-
-            // 申请表现层 GameObject
-            int slotIndex = AddProjectile(prefab, entity);
-
-            WD.VfxRenderSlotComponent slotComp = new WD.VfxRenderSlotComponent();
-            slotComp.p_slotIndex = slotIndex;
-            _entityManager.SetComponentData(entity, slotComp);
         }
-#endregion
 
-#region private functions
+        // 提取直线运动组件组装
+        private void BuildLinearMovement(Entity entity, Vector2 startPos, Vector2 direction, float speed, float maxDistance)
+        {
+            WD.ProjectilePositionComponent posComp = new WD.ProjectilePositionComponent();
+            posComp.p_position = new float2(startPos.x, startPos.y);
+            posComp.p_rotationAngle = math.degrees(math.atan2(direction.y, direction.x));
+            _entityManager.SetComponentData(entity, posComp);
+
+            WD.LinearMoveComponent moveComp = new WD.LinearMoveComponent();
+            moveComp.p_direction = new float2(direction.x, direction.y);
+            moveComp.p_speed = speed;
+            moveComp.p_maxDistance = maxDistance;
+            moveComp.p_movedDistance = 0f;
+            _entityManager.SetComponentData(entity, moveComp);
+        }
+
+        // 提取目标锁定组件组装
+        private void AttachTarget(Entity entity, int targetEleType, int targetGridIndex)
+        {
+            WD.ProjectileTargetComponent targetComp = new WD.ProjectileTargetComponent();
+            targetComp.p_targetEleType = targetEleType;
+            targetComp.p_targetGridIndex = targetGridIndex;
+            _entityManager.AddComponentData(entity, targetComp);
+        }
+
         private int AddProjectile(GameObject prefab, Entity ecsEntity)
         {
             p_jobHandle.Complete();

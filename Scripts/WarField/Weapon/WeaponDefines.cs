@@ -26,9 +26,31 @@ namespace WarField
             public long p_configId; //waepon的具体类型
             public WE.FactionType p_faction;
             public float p_baseDamage;
+            public int p_mapId;
             public int p_casterEleType;
             public int p_casterGridIndex; //发射weapon的_gridIndex, 就是WarEleParent._gridIndex
             public bool p_triggerSkill; //whether call BullectHit() or ShellHit() to call SkillDoAttackPost()/BuffDoAttackPost()/TalentDoAttackPost()
+        }
+
+        //目标记录组件 (用于传给回调)
+        public struct ProjectileTargetComponent : IComponentData
+        {
+            public int p_targetEleType;
+            public int p_targetGridIndex;
+        }
+
+        // 单体攻击组件 (Bullet专属)
+        public struct SingleTargetComponent : IComponentData
+        {
+            // 单体特定参数可以放这
+        }
+
+        // 范围攻击组件 (Shell专属)
+        public struct AreaDamageComponent : IComponentData
+        {
+            public float p_damageRange;
+            public float p_otherDamage; // 边缘衰减伤害
+            public bool p_canAttackBuilding; // 是否允许伤害建筑，默认true
         }
 
         // 空间与姿态（剥离 GameObject Transform 的核心）
@@ -67,6 +89,21 @@ namespace WarField
         public struct ProjectileDestroyTag : IComponentData, IEnableableComponent
         {
             // 挂上这个 Tag 的实体，会在一帧结束后被回收系统统一销毁
+        }
+
+        // 穿透碰撞组件（NOTARGETBULLET 专属挂载）
+        public struct LinearPenetrationComponent : IComponentData
+        {
+            public float p_colliderRadius;
+        }
+
+        // ECS的内存连续动态数组：用于记录这颗子弹已经伤害过哪些敌人
+        // [InternalBufferCapacity(16)] 表示默认给它分配 16 个元素的连续内存，超过才会分配到堆内存
+        [InternalBufferCapacity(16)]
+        public struct HitRecordElement : IBufferElementData  //用来给notarget 的记录的,  因为可能在多帧里面search到相同的目标
+        {
+            public int p_targetEleType;
+            public int p_targetGridIndex;
         }
     }
 }

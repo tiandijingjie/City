@@ -21,6 +21,7 @@ namespace WarField
 #region private parameters
 
         [SerializeField] private GlobalAnimConfig _animConfig;
+        [SerializeField] private float _animFPS = 12; //全局FPS(不影响特效特效的帧率)
         private Dictionary<uint, BlobAssetReference<BlobElementData>> _animBlobs;
 
         // ECS
@@ -157,6 +158,9 @@ namespace WarField
             //         AnimSyncJob 只影响 _cmdBuffer 写入，推迟到第四步再等。
             // =================================================================
 
+            // 每帧将主线程的基准 fps 同步给 ECS Job（AnimGlobalData 是普通静态类，无竞态）
+            AnimGlobalData.s_animFPS = _animFPS;
+
             AnimRenderExportSystem.CompleteExport();
             _matrixJobHandle.Complete();
 
@@ -202,7 +206,6 @@ namespace WarField
                     float py = worldMats[slot].m13;
                     if (math.abs(px - camCX) > camHalfW || math.abs(py - camCY) > camHalfH)
                         continue;
-
                     _matrixBatch[batchCount] = worldMats[slot];
                     _sliceBatch[batchCount]  = snaps[slot].p_sliceIndex;
                     _alphaBatch[batchCount]  = proxy.gs_alpha;

@@ -66,9 +66,7 @@ namespace WarField
                 }
             }
 
-            Projectile bt = WeaponCtrl.Instance.GetProjectile(_defenceConf.gs_race, _weaponId, _weaponPfb);
-            Vector3 startPos = _transform.position + _shootOffset;
-            bt.gs_transform.position = startPos;
+            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
             Vector2 targetPos = Vector2.zero;
             float damage = 0;
             if (_rivalType == WE.WarEleType.SOLDIER)
@@ -82,8 +80,12 @@ namespace WarField
                 damage = _bdDamage;
             }
 
-            bt.InitProjectile(gameObject, WE.WarEleType.BUILDING, this, startPos, _rival, _rivalType, _rivalScript, targetPos, 20f,
-                _defenceConf.gs_faction, damage, _mapId);
+            int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
+            WeaponCtrl.Instance.FireBezierBullet(
+                _weaponId, _defenceConf.gs_faction, damage,
+                _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
+                (int)_rivalType, targetGridIndex, true,
+                startPos, targetPos, 20f, 20f, _weaponPfb);
         }
 
         protected override bool ChooseRival()

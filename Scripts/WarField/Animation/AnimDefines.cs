@@ -45,6 +45,8 @@ namespace WarField.Anim
     public class VariationAnimData
     {
         public int p_eventFrame;
+        // 变体级播放速率倍率，1.0 = 正常速度，与 AnimCtrl._animFPS 配合使用
+        // (已烘焙数据；运行时实体级倍率见 AnimationRuntimeState.p_animRate)
         public float p_frameRate;
         public int p_animFrameCount;
         public List<int> p_animStartOffset = new List<int>();

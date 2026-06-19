@@ -9,16 +9,25 @@ namespace WarField.Anim
 {
     //AnimUpdateSystem 和 AnimationUpdateJob 一起负责更新动画帧
 
+    // 用独立静态类持有全局 fps，完全绕开 Burst struct 的静态字段限制。
+    // AnimCtrl.LateUpdate 每帧写入，AnimUpdateSystem.OnUpdate 读取（均在主线程，无竞态）。
+    public static class AnimGlobalData
+    {
+        public static float s_animFPS = 12f;
+    }
+
     [BurstCompile]
     public partial struct AnimUpdateSystem : ISystem
     {
-        [BurstCompile]
+        // OnUpdate 不加 [BurstCompile]，与 AnimRenderExportSystem 完全一致的模式：
+        // 主线程读取托管静态字段，再调度 Burst Job（Job.Execute 仍是 BurstCompile）。
         public void OnUpdate(ref SystemState state) //由world默认每帧调用
         {
-            // 调度多线程并行 Job 驱动全场动画状态
+            float fps = AnimGlobalData.s_animFPS > 0f ? AnimGlobalData.s_animFPS : 12f;
             var animJob = new AnimationUpdateJob
             {
-                p_deltaTime = SystemAPI.Time.DeltaTime
+                p_deltaTime = state.WorldUnmanaged.Time.DeltaTime,
+                p_animFPS   = fps
             };
 
             state.Dependency = animJob.ScheduleParallel(state.Dependency);
@@ -30,6 +39,8 @@ namespace WarField.Anim
     {
         // 传递当前帧的步长
         public float p_deltaTime;
+        // 全局基准 fps，由 AnimCtrl._animFPS 通过 AnimGlobalData 驱动
+        public float p_animFPS;
 
         public void Execute(ref AnimationRuntimeState runtimeState)
         {
@@ -86,11 +97,11 @@ namespace WarField.Anim
 
             ref var variation = ref targetState.p_variations[runtimeState.p_currentVariationIndex];
 
-            // 累加已播放时间
-            runtimeState.p_elapsedTime = runtimeState.p_elapsedTime + (p_deltaTime * runtimeState.p_animRate);
-            float totalDuration = variation.p_animFrameCount / variation.p_frameRate;
+            // 累加已播放时间：p_frameRate 现为速率倍率（1.0 = 正常速度），p_animFPS 为基准 fps
+            runtimeState.p_elapsedTime = runtimeState.p_elapsedTime + (p_deltaTime * runtimeState.p_animRate * variation.p_frameRate);
+            float totalDuration = variation.p_animFrameCount / p_animFPS;
 
-            int nextFrame = (int)(runtimeState.p_elapsedTime * variation.p_frameRate);
+            int nextFrame = (int)(runtimeState.p_elapsedTime * p_animFPS);
             // 边界检查：处理循环与非循环边界卡帧逻辑
             if (runtimeState.p_elapsedTime >= totalDuration) //已经超过动画一个循环的时间
             {
@@ -100,7 +111,7 @@ namespace WarField.Anim
                     if (variation.p_eventFrame != -1 && nextFrame >= variation.p_eventFrame && prevFrame < variation.p_eventFrame)
                         runtimeState.p_eventTriggerCount = runtimeState.p_eventTriggerCount + 1;
                     runtimeState.p_elapsedTime = runtimeState.p_elapsedTime % totalDuration;
-                    int wrappedFrame = (int)(runtimeState.p_elapsedTime * variation.p_frameRate);
+                    int wrappedFrame = (int)(runtimeState.p_elapsedTime * p_animFPS);
                     runtimeState.p_currentFrameIndex = math.clamp(wrappedFrame, 0, variation.p_animFrameCount - 1); //这里不能用nextFrame,因为runtimeState.p_elapsedTime又更新了
                 }
                 else //不是循环动画

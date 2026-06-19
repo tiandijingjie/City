@@ -37,7 +37,7 @@ namespace WarField
         private RangedHero _rangedHero;
 
         private GameObject _arrowPfb;
-        private long _arrowId;
+        [SerializeField] private int _arrowId;
 #endregion
 
 #region private parameters' get set
@@ -84,10 +84,7 @@ namespace WarField
                         (int)RangedHeroIndividualData.IndividualDataType.SUDDENDEMISE];
             _name = _curAttribute.GetDescription().p_name;
 
-            if (_arrowPfb != null)
-                _arrowId = WeaponCtrl.Instance.GetWeaponID(WE.RaceType.Human, (long)SD.TroopType.Ranged, (long)HumanDefines.HeroType.RANGEDHERO, 0xf,
-                    WE.WarEleType.SOLDIER);  //other value is set tobe 0xf
-            else
+            if (_arrowPfb == null)
                 GameLogger.LogError($"RangedHeroSuddenDemiseSkill failed to get arrow prefab");
 
             _rangedHero = _soldier as RangedHero;
