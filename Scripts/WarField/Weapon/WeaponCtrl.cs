@@ -138,7 +138,7 @@ namespace WarField
         // 发射抛物线单体子弹 (如：弓箭、魔法球)
         //casterGridIndex :发射者的gridIndex
         public void FireBezierBullet(
-            long configId, WE.FactionType faction, float damage,
+            long weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
             Vector2 startPos, Vector2 endPos, float maxHeight, float speed, GameObject prefab)
@@ -146,7 +146,7 @@ namespace WarField
             if (_beInited == false)
                 return;
 
-            Entity entity = CreateBaseProjectile(_bezierArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            Entity entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
             BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
             AttachTarget(entity, targetEleType, targetGridIndex);
 
@@ -158,7 +158,7 @@ namespace WarField
         // otherDamage:主目标之外其他目标的伤害
         // canAttackBuilding:是否允许伤害建筑
         public void FireBezierShell(
-            long configId, WE.FactionType faction, float damage,
+            long weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
             Vector2 startPos, Vector2 endPos, float maxHeight, float speed,
@@ -167,7 +167,7 @@ namespace WarField
             if (_beInited == false)
                 return;
 
-            Entity entity = CreateBaseProjectile(_bezierArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            Entity entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
             BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
             AttachTarget(entity, targetEleType, targetGridIndex);
 
@@ -180,7 +180,7 @@ namespace WarField
 
         // 发射直线单体子弹 (如：火枪、平飞无抛物线的魔法)
         public void FireLinearBullet(
-            long configId, WE.FactionType faction, float damage,
+            long weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
             Vector2 startPos, Vector2 direction, float speed, float maxDistance, GameObject prefab)
@@ -188,7 +188,7 @@ namespace WarField
             if (_beInited == false)
                 return;
 
-            Entity entity = CreateBaseProjectile(_linearArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            Entity entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
             BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
             AttachTarget(entity, targetEleType, targetGridIndex);
 
@@ -197,7 +197,7 @@ namespace WarField
 
         // 发射直线穿透技能 (如：风行者强力击、穿透激光)
         public void FireLinearNoTarget(
-            long configId, WE.FactionType faction, float damage,
+            long weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             Vector2 startPos, Vector2 direction, float speed, float maxDistance,
             float colliderRadius, GameObject prefab) // 删除了 maxPierceCount
@@ -205,7 +205,7 @@ namespace WarField
             if (_beInited == false)
                 return;
 
-            Entity entity = CreateBaseProjectile(_linearArchetype, configId, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
+            Entity entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
             BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
 
             // 挂载判定范围组件
@@ -221,13 +221,13 @@ namespace WarField
 #region private functions
         // 提取公共基础组件生成，消除重复代码
         private Entity CreateBaseProjectile(
-            EntityArchetype archetype, long configId, WE.FactionType faction, float damage,
+            EntityArchetype archetype, long weaponId, WE.FactionType faction, float damage,
             int mapId, int casterEleType, int casterGridIndex, bool triggerSkill, GameObject prefab)
         {
             Entity entity = _entityManager.CreateEntity(archetype);
 
             WD.ProjectileBaseComponent baseComp = new WD.ProjectileBaseComponent();
-            baseComp.p_configId = configId;
+            baseComp.p_weaponId = weaponId;
             baseComp.p_faction = faction;
             baseComp.p_baseDamage = damage;
             baseComp.p_mapId = mapId;

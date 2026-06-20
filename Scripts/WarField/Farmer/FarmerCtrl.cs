@@ -96,8 +96,12 @@ namespace WarField
             IAnimInfo animInfo = scriptComponent as IAnimInfo;
             uint eleAnimId = animInfo.IAnimInfo_GetEleAnimId();
             Dictionary<string, uint> stateDic = animInfo.IAnimInfo_GetStateId();
-            if (!AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, _fmPrefab.name, stateDic))
+            ref BlobElementData data = ref System.Runtime.CompilerServices.Unsafe.NullRef<BlobElementData>();
+            if (AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, _fmPrefab.name, stateDic, out var blobAssetRef) == false)
+            {
                 GameLogger.LogWarning($"BindAnimWithEntity failed：{_fmPrefab.name} (eleAnimId={eleAnimId})");
+                return false;
+            }
 
             _fmOnField = new AsyncDataPoolForTransform<Farmer>();
             _fmOnField.EnableTransformSync(PopulationSystem.Instance.gs_maxPopulation, fmAdd => fmAdd.gs_transform);  //从人口系统获取的最大人口值

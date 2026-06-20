@@ -35,6 +35,8 @@ namespace WarField.Anim
 
         private bool _isVisible;
         private bool _isEcsDirty = false;
+        // 当需要强制重播同一动画状态时置 true，令 AnimSyncJob 重置 p_previousStateId 触发 AnimUpdateJob 重新播放
+        private bool _forceReplay = false;
 
         // 在 AnimCtrl._allProxies 扁平列表中的槽位索引，供 WorldMatrixCacheJob 和 _worldMatrixCache 使用
         private int _worldMatrixSlot = -1;
@@ -138,6 +140,7 @@ namespace WarField.Anim
             _lastFinishCount = 0;
             _animRate = 1.0f;
             _isEcsDirty = false;
+            _forceReplay = false;
 
             _hasStateAnim = new bool[maxState];
             for (int i = 0; i < maxState; i++)
@@ -187,6 +190,33 @@ namespace WarField.Anim
             }
         }
 
+        // 强制重播相同的动画状态（用于攻击动画等需要再次播放同一 state 的场景）
+        // 即使 stateId 未变也会重置 ECS 侧的 p_previousStateId，令 AnimUpdateJob 重新从第0帧开始播放
+        // 不重置 _lastEventCount / _lastFinishCount：AnimCtrl 通过检测 snap.count < proxy.lastCount 来自动同步
+        public void ForceReplayAnimState(int stateId)
+        {
+            if (stateId == -1)
+                return;
+
+            _curAnimStateId = (uint)stateId;
+            _forceReplay = true;
+            _isEcsDirty = true;
+        }
+
+        // 查询当前动画状态是否被配置为循环播放
+        public bool IsCurrentAnimLooping()
+        {
+            if (!_blobAnimData.IsCreated)
+                return false;
+            ref var elementData = ref _blobAnimData.Value;
+            for (int i = 0; i < elementData.p_states.Length; i++)
+            {
+                if (elementData.p_states[i].p_stateId == _curAnimStateId)
+                    return elementData.p_states[i].p_isLoop;
+            }
+            return false;
+        }
+
         // -1 means not change
         public void ChangeDirection(int dirIndex)
         {
@@ -223,8 +253,9 @@ namespace WarField.Anim
         {
             if (_isEcsDirty && _ecsEntity != Entity.Null)
             {
-                AnimCtrl.Instance.SyncAnimState(_ecsEntity, _curAnimStateId, _prvSyncedDirIndex, _animRate);
+                AnimCtrl.Instance.SyncAnimState(_ecsEntity, _curAnimStateId, _prvSyncedDirIndex, _animRate, _forceReplay);
                 _isEcsDirty = false;
+                _forceReplay = false;
             }
         }
 

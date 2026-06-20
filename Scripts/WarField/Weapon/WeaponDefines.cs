@@ -23,7 +23,7 @@ namespace WarField
         // 投射物基础属性（任何投射物都有）
         public struct ProjectileBaseComponent : IComponentData
         {
-            public long p_configId; //waepon的具体类型
+            public long p_weaponId; //waepon的具体类型, 每种远程投掷物一个ID
             public WE.FactionType p_faction;
             public float p_baseDamage;
             public int p_mapId;

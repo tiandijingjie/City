@@ -985,8 +985,36 @@ namespace WarField
                                     IAnimInfo animInfo = scriptComponent as IAnimInfo;
                                     uint eleAnimId = animInfo.IAnimInfo_GetEleAnimId();
                                     Dictionary<string, uint> stateDic = animInfo.IAnimInfo_GetStateId();
-                                    if (!AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, prefab.name, stateDic))
+                                    if (AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, prefab.name, stateDic, out var blobAssetRef) == false)
                                         GameLogger.LogWarning($"BindAnimWithEntity failed：{prefab.name} (eleAnimId={eleAnimId})");
+                                    else
+                                    {
+                                        ref BlobElementData data = ref blobAssetRef.Value;
+                                        int stateCount = data.p_states.Length;
+                                        for (int m = 0; m < stateCount; m++)
+                                        {
+                                            ref BlobStateData state = ref data.p_states[m];
+                                            //attack 和 skill 必须要有event frame来做事件回调
+                                            if (state.p_stateId == (uint)SD.SoldierAnimType.ATTACK || state.p_stateId == (uint)SD.SoldierAnimType.SKILL)
+                                            {
+                                                if(state.p_isLoop == true)
+                                                    GameLogger.LogError($"{prefab.name} can not set animation {(SD.SoldierAnimType)state.p_stateId} to be loop");
+
+                                                int variationCount = state.p_variations.Length;
+                                                for (int n = 0; n < variationCount; n++)
+                                                {
+                                                    ref BlobVariationData variation = ref state.p_variations[n];
+                                                    if (variation.p_eventFrame < 0)
+                                                        GameLogger.LogError($"{prefab.name} not set event frame for animation {(SD.SoldierAnimType)state.p_stateId}");
+                                                }
+                                            }
+                                            else //其他的动画必须要loop
+                                            {
+                                                if(state.p_isLoop != true)
+                                                    GameLogger.LogError($"{prefab.name} must set animation {(SD.SoldierAnimType)state.p_stateId} to be loop");
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -847,7 +847,7 @@ namespace WarField
 
             _blockerCount = _flowFieldBlockers.Length;
 
-            GameLogger.LogWarning($"map {_mapId}, add {totalEntitiesBaked} Obstables into grid");
+            GameLogger.LogDebug($"map {_mapId}, add {totalEntitiesBaked} Obstables into grid");
         }
 
         //生成流场地图

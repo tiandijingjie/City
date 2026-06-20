@@ -746,6 +746,7 @@ namespace WarField
 
             _nextAttackInterval = 0;
             _oriAttackInterval = SD.GetAttackInterval(_curState.p_attackSpeed);
+            if (_oriAttackInterval < 1f) _oriAttackInterval = 1f; // 防止攻击速度过高导致间隔为0卡死
 
             //behavior
             _behaviorMode = SD.BehaviorMode.NORMAL;
@@ -1754,6 +1755,15 @@ namespace WarField
             {
                 case (int)SD.SoldierAnimType.ATTACK:
                     AttackPost();
+                    // 对循环攻击动画的防守：若 finish 事件不触发（p_isLoop = true），攻击事件
+                    // 本身也负责重置攻击间隔，确保攻击能按攻击速度持续循环。
+                    // 对非循环动画：此处仅在 -1 事件到来之前提前重置，-1 事件到来时
+                    // _curAnimType 已为 MIN，不会再次叠加间隔，行为正确。
+                    if (_nextAttackInterval <= 0 && _oriAttackInterval > 0)
+                    {
+                        _nextAttackInterval = _oriAttackInterval;
+                        _curAnimType = SD.SoldierAnimType.MIN; // 允许 CheckAnimation 检测到 animOver，触发 ForceReplayAnimState
+                    }
                     break;
                 case (int)SD.SoldierAnimType.DIE:
                     TriggerDieAction();
@@ -2736,7 +2746,12 @@ namespace WarField
                 return false;
             }
 
-            _animProxy.ChangeAnimState((int)_curAnimType);
+            // 当 proxy 已处于同一状态时（非循环动画完成后需要重新触发），强制重播
+            // 否则 ChangeAnimState 因 stateId 未变而是 no-op，ECS 不重置动画，攻击动画卡在最后一帧
+            if (_animProxy.gs_curAnimStateId == (uint)_curAnimType)
+                _animProxy.ForceReplayAnimState((int)_curAnimType);
+            else
+                _animProxy.ChangeAnimState((int)_curAnimType);
 		    return true;
 		}
 

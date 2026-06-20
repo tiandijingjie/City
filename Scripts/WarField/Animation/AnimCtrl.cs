@@ -252,6 +252,13 @@ namespace WarField
                 if (snap.p_currentStateId != proxy.gs_curAnimStateId) continue;
 
                 int lastEvt = proxy.gs_lastEventCount;
+                // ECS 计数器在状态重置时会归零（ForceReplayAnimState / 正常状态切换均会触发）
+                // 若 snap.count < lastCount，说明 ECS 侧已重置，将代理侧计数器同步下来，避免错过后续事件
+                if (snap.p_eventCount < lastEvt)
+                {
+                    proxy.gs_lastEventCount = snap.p_eventCount;
+                    lastEvt = snap.p_eventCount;
+                }
                 if (snap.p_eventCount > lastEvt)
                 {
                     int times = snap.p_eventCount - lastEvt;
@@ -261,6 +268,12 @@ namespace WarField
                 }
 
                 int lastFin = proxy.gs_lastFinishCount;
+                // 同上：ECS finishCount 归零时同步代理计数器，防止实际 finish 事件被漏检
+                if (snap.p_finishCount < lastFin)
+                {
+                    proxy.gs_lastFinishCount = snap.p_finishCount;
+                    lastFin = snap.p_finishCount;
+                }
                 if (snap.p_finishCount > lastFin)
                 {
                     proxy.gs_lastFinishCount = snap.p_finishCount;
@@ -454,7 +467,7 @@ namespace WarField
             _entityManager.SetComponentData(entity, st);
         }
 
-        public void SyncAnimState(Entity targetEntity, uint stateId, int dirIndex, float animRate)
+        public void SyncAnimState(Entity targetEntity, uint stateId, int dirIndex, float animRate, bool forceReset = false)
         {
             if (!_beInited || targetEntity == Entity.Null) return;
 
@@ -463,7 +476,8 @@ namespace WarField
                 p_targetAnimEntity = targetEntity,
                 p_stateId          = stateId,
                 p_directionIndex   = dirIndex,
-                p_animRate         = animRate
+                p_animRate         = animRate,
+                p_forceReset       = forceReset
             });
         }
 
@@ -517,14 +531,18 @@ namespace WarField
                 _entityManager.DestroyEntity(entity);
         }
 
-        public bool BindAnimWithEntity(uint eleAnimId, string entityName, Dictionary<string, uint> stateDic)
+        //初始化时候将animId和BlobElementData绑定, 将stateID和BlobStateData绑定
+        public bool BindAnimWithEntity(uint eleAnimId, string entityName, Dictionary<string, uint> stateDic, out BlobAssetReference<BlobElementData> blobRef)
         {
-            if (!_beInited) return false;
+            blobRef = default;
+
+            if (_beInited == false)
+                return false;
 
             var conf = _animConfig.GetElementData(entityName);
             if (conf == null)
             {
-                GameLogger.LogError($"Fail to find the animation {entityName}");
+                GameLogger.LogError($"Fail to find the animation {entityName} in Blob asset");
                 return false;
             }
 
@@ -570,9 +588,11 @@ namespace WarField
                 }
             }
 
-            _animBlobs.Add(eleAnimId, builder.CreateBlobAssetReference<BlobElementData>(Allocator.Persistent));
+            var blob = builder.CreateBlobAssetReference<BlobElementData>(Allocator.Persistent);
+            _animBlobs.Add(eleAnimId, blob);
             // 所有 state 都成功映射后才记录 baked 数据，避免一致性不匹配
             _bakedDataDict[eleAnimId] = conf;
+            blobRef = blob;
             return true;
         }
 

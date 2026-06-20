@@ -67,5 +67,8 @@ namespace WarField.Anim
         public uint p_stateId;
         public int p_directionIndex;
         public float p_animRate;
+        // 强制重播同一动画状态时置 true：AnimSyncJob 会将 p_previousStateId 设为 uint.MaxValue
+        // 使 AnimUpdateJob 检测到"状态变化"从而重置动画计时和事件计数
+        public bool p_forceReset;
     }
 }

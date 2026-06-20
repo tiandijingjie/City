@@ -89,6 +89,10 @@ namespace WarField.Anim
             st.p_currentStateId       = cmd.p_stateId;
             st.p_currentDirectionIndex = cmd.p_directionIndex;
             st.p_animRate             = cmd.p_animRate;
+            // p_forceReset: 强制重播同一 state（如攻击动画结束后再次播放）
+            // 将 p_previousStateId 置为 uint.MaxValue，令 AnimUpdateJob 误判状态发生变化，触发完整动画重置
+            if (cmd.p_forceReset)
+                st.p_previousStateId = uint.MaxValue;
             p_stateLookup[target]     = st;
         }
     }
