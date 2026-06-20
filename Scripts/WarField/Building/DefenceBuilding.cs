@@ -24,7 +24,7 @@ namespace WarField
         [SerializeField] protected DefenceConf _defenceConf = null; //just the _bdConf
 
         protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected int _weaponId;
+        [SerializeField] protected uint _weaponId;
 
         protected DataPool<GameObject>[] _rivalInRange;
         protected WE.WarEleType _rivalType;
@@ -345,11 +345,11 @@ namespace WarField
 
             if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.BULLET)
             {
-                WeaponCtrl.Instance.FireBezierBullet(
+                WeaponCtrl.Instance.FireBullet(
                     _weaponId, _defenceConf.gs_faction, damage,
                     _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
                     (int)_rivalType, targetGridIndex, true,
-                    startPos, targetPos, 20f, 20f, _weaponPfb);
+                    startPos, targetPos, _weaponPfb);
             }
             else if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.SHELL)
             {
@@ -357,7 +357,7 @@ namespace WarField
                     _weaponId, _defenceConf.gs_faction, damage,
                     _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
                     (int)_rivalType, targetGridIndex, true,
-                    startPos, targetPos, 20f, 10f,
+                    startPos, targetPos,
                     _defenceConf.gs_weaponRange, damage, _weaponPfb);
             }
             //not has NoTargetBullet for now

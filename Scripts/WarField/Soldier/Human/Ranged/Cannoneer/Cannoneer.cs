@@ -46,7 +46,7 @@ namespace WarField
                 _weaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                 (int)rivalType, targetGridIndex, true,
-                startPos, targetPos, 20f, 10f,
+                startPos, targetPos,
                 _shellAttackRange, _otherDamage, _weaponPfb);
         }
 

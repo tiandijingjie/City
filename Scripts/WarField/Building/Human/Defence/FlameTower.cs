@@ -62,7 +62,7 @@ namespace WarField
                 _weaponId, _defenceConf.gs_faction, _defenceConf.gs_damage,
                 _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
                 (int)WE.WarEleType.SOLDIER, targetGridIndex, true,
-                startPos, targetPos, 20f, 10f,
+                startPos, targetPos,
                 _defenceConf.gs_weaponRange, _defenceConf.gs_damage, _weaponPfb, false);
         }
 

@@ -61,7 +61,7 @@ namespace WarField.Anim
     }
 
     [Serializable]
-    public class ElementAnimBakedData
+    public class ElementAnimBakedData //用于读取全局配置asset,然后转成blob
     {
         public string p_elementName;
         public List<StateAnimData> p_stateAnim = new List<StateAnimData>();

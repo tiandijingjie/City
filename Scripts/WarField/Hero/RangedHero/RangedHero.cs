@@ -22,7 +22,7 @@ namespace WarField
         [SerializeField] protected SD.RemoteAttackStartPosition _shootPos; //出手射击的位置
 
         protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected int _weaponId;
+        [SerializeField] protected uint _weaponId;
 #endregion
 
 #region private parameters' get set
@@ -85,15 +85,15 @@ namespace WarField
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
             int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
-            WeaponCtrl.Instance.FireBezierBullet(
+            WeaponCtrl.Instance.FireBullet(
                 _weaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                 (int)rivalType, targetGridIndex, true,
-                startPos, targetPos, 20f, 20f, _weaponPfb);
+                startPos, targetPos, _weaponPfb);
         }
 
         //根据技能需要射出一些特殊的arrow
-        public void ShootSpecialWeaponTo(GameObject weaponPfb, int weaponId, Vector3 startOffset, GameObject target, WE.WarEleType targetType,
+        public void ShootSpecialWeaponTo(GameObject weaponPfb, uint weaponId, Vector3 startOffset, GameObject target, WE.WarEleType targetType,
             MonoBehaviour rivalScript, float damage)
         {
             Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
@@ -104,11 +104,11 @@ namespace WarField
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
             int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
-            WeaponCtrl.Instance.FireBezierBullet(
+            WeaponCtrl.Instance.FireBullet(
                 weaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                 (int)targetType, targetGridIndex, true,
-                startPos, targetPos, 20f, 20f, weaponPfb);
+                startPos, targetPos, weaponPfb);
         }
 #endregion
 

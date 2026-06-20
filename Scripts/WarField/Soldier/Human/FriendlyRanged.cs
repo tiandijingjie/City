@@ -22,7 +22,7 @@ namespace WarField
         [SerializeField] protected SD.RemoteAttackStartPosition _shootPos; //出手射击的位置
 
         protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected int _weaponId;
+        [SerializeField] protected uint _weaponId;
 
 #endregion
 
@@ -68,11 +68,11 @@ namespace WarField
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
             int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
-            WeaponCtrl.Instance.FireBezierBullet(
+            WeaponCtrl.Instance.FireBullet(
                 _weaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                 (int)rivalType, targetGridIndex, true,
-                startPos, targetPos, 20f, 20f, _weaponPfb);
+                startPos, targetPos, _weaponPfb);
         }
 
 #endregion

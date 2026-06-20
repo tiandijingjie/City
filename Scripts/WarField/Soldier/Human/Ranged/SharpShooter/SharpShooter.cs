@@ -24,7 +24,7 @@ namespace WarField
 
         [SerializeField] private GameObject _skillArrow;
 
-        [SerializeField] private int _skillWeaponId; //蓄力击
+        [SerializeField] private uint _skillWeaponId; //蓄力击
 
         private bool _needAttackSecondRival;
         private float _secondAttackDamageTimes;
@@ -104,11 +104,11 @@ namespace WarField
                 targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
 
             int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
-            WeaponCtrl.Instance.FireBezierBullet(
+            WeaponCtrl.Instance.FireBullet(
                 _weaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                 (int)rivalType, targetGridIndex, true,
-                startPos, targetPos, 20f, 20f, _weaponPfb);
+                startPos, targetPos, _weaponPfb);
 
             if (_needAttackSecondRival == true)
             {
@@ -132,11 +132,11 @@ namespace WarField
             {
                 Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
                 Soldier secondTarget = (Soldier)target;
-                WeaponCtrl.Instance.FireBezierBullet(
+                WeaponCtrl.Instance.FireBullet(
                     _weaponId, _faction, _mainDamage * _secondAttackDamageTimes,
                     _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
                     (int)WE.WarEleType.SOLDIER, secondTarget.gs_gridIndex, false,
-                    startPos, secondTarget.gs_bullectTargetPos, 20f, 20f, _weaponPfb);
+                    startPos, secondTarget.gs_bullectTargetPos, _weaponPfb);
                 _needAttackSecondRival = false;
             }
         }
@@ -163,7 +163,7 @@ namespace WarField
             WeaponCtrl.Instance.FireLinearNoTarget(
                 _skillWeaponId, _faction, damage,
                 _mapId, (int)WE.WarEleType.SOLDIER, gs_gridIndex,
-                startPos, direction, 20f, distance,
+                startPos, direction, distance,
                 0.3f, _skillArrow);
         }
 #endregion

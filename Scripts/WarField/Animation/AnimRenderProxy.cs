@@ -19,7 +19,7 @@ namespace WarField.Anim
 #region private parameters
 
         private Entity _ecsEntity = Entity.Null;
-        private BlobAssetReference<BlobElementData> _blobAnimData;
+        private BlobAssetReference<BlobAnimData> _blobAnimData;
         private Transform _parentTransform;
         private IAnimInfo _animInfoHost;
         private uint _eleAnimId;

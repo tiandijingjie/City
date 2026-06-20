@@ -989,7 +989,7 @@ namespace WarField
                                         GameLogger.LogWarning($"BindAnimWithEntity failed：{prefab.name} (eleAnimId={eleAnimId})");
                                     else
                                     {
-                                        ref BlobElementData data = ref blobAssetRef.Value;
+                                        ref BlobAnimData data = ref blobAssetRef.Value;
                                         int stateCount = data.p_states.Length;
                                         for (int m = 0; m < stateCount; m++)
                                         {

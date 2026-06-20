@@ -22,7 +22,7 @@ namespace WarField.Anim
         public BlobArray<BlobVariationData> p_variations;
     }
 
-    public struct BlobElementData
+    public struct BlobAnimData
     {
         public AnimEneityId p_eleAnimId; //每种entity一个id
         public BlobArray<BlobStateData> p_states;
@@ -31,7 +31,7 @@ namespace WarField.Anim
     //每个entity使用AnimationRuntimeState记录当前的动画info
     public struct AnimationRuntimeState : IComponentData
     {
-        public BlobAssetReference<BlobElementData> p_elementBlobRef;
+        public BlobAssetReference<BlobAnimData> p_elementBlobRef;
 
         public uint p_currentStateId;
         public uint p_previousStateId; // 用于检测状态是否改变

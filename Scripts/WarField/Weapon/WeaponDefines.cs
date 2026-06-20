@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using Unity.Entities;
@@ -20,10 +21,36 @@ namespace WarField
             MAX,
         }
 
+        [Serializable]
+        public class ElementWeaponBakedData //用于读取全局配置asset,然后转成blob
+        {
+            public long p_weaponId; //每种weapon一个ID
+            public float p_speed; //飞行速度
+            public float p_maxHeight; //飞行最大高度
+        }
+
+        // Blob Asset, 将 ElementWeaponBakedData 中数据提取出来
+        public struct BlobWeaponElementData
+        {
+            public uint p_weaponId;
+            public float p_speed;
+            public float p_maxHeight;
+        }
+
+        public struct BlobWeaponDatabase
+        {
+            public BlobArray<BlobWeaponElementData> p_elements;
+        }
+
+        public struct WeaponConfigBlobSingleton : IComponentData
+        {
+            public BlobAssetReference<BlobWeaponDatabase> p_blobRef;
+        }
+
         // 投射物基础属性（任何投射物都有）
         public struct ProjectileBaseComponent : IComponentData
         {
-            public long p_weaponId; //waepon的具体类型, 每种远程投掷物一个ID
+            public uint p_weaponId; //waepon的具体类型, 每种远程投掷物一个ID
             public WE.FactionType p_faction;
             public float p_baseDamage;
             public int p_mapId;

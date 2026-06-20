@@ -96,7 +96,7 @@ namespace WarField
             IAnimInfo animInfo = scriptComponent as IAnimInfo;
             uint eleAnimId = animInfo.IAnimInfo_GetEleAnimId();
             Dictionary<string, uint> stateDic = animInfo.IAnimInfo_GetStateId();
-            ref BlobElementData data = ref System.Runtime.CompilerServices.Unsafe.NullRef<BlobElementData>();
+            ref BlobAnimData data = ref System.Runtime.CompilerServices.Unsafe.NullRef<BlobAnimData>();
             if (AnimCtrl.Instance.BindAnimWithEntity(eleAnimId, _fmPrefab.name, stateDic, out var blobAssetRef) == false)
             {
                 GameLogger.LogWarning($"BindAnimWithEntity failed：{_fmPrefab.name} (eleAnimId={eleAnimId})");

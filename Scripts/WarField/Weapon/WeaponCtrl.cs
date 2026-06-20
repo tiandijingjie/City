@@ -24,6 +24,8 @@ namespace WarField
 #endregion
 
 #region private parameters
+        [SerializeField] private GlobalWeaponConfig _weaponConfig;
+
         // --- GameObject 对象池 ---
         private List<GameObject> _activeObjects;
         private List<Entity> _activeEntities;
@@ -34,6 +36,9 @@ namespace WarField
         private EntityManager _entityManager;
         private EntityArchetype _bezierArchetype;
         private EntityArchetype _linearArchetype;
+        private Entity _weaponConfigSingletonEntity;
+        private BlobAssetReference<WD.BlobWeaponDatabase> _weaponBlob;
+        private Dictionary<uint, int> _weaponIdToIndex;
         private bool _beInited = false;
 #endregion
 
@@ -59,6 +64,7 @@ namespace WarField
         private void OnDestroy()
         {
             p_jobHandle.Complete();
+            ShutdownWeaponBlob();
 
             if (p_positions.IsCreated)
             {
@@ -98,6 +104,9 @@ namespace WarField
                 typeof(WD.VfxRenderSlotComponent)
             );
 
+            if (BuildWeaponBlob() == false)
+                return false;
+
             _beInited = true;
 
             return true;
@@ -135,21 +144,38 @@ namespace WarField
             return movedEntity;
         }
 
-        // 发射抛物线单体子弹 (如：弓箭、魔法球)
+        // 发射单体子弹；p_maxHeight==0 为直线弹道，否则为抛物线弹道
         //casterGridIndex :发射者的gridIndex
-        public void FireBezierBullet(
-            long weaponId, WE.FactionType faction, float damage,
+        public void FireBullet(
+            uint weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
-            Vector2 startPos, Vector2 endPos, float maxHeight, float speed, GameObject prefab)
+            Vector2 startPos, Vector2 endPos, GameObject prefab)
         {
             if (_beInited == false)
                 return;
 
-            Entity entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
-            BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
-            AttachTarget(entity, targetEleType, targetGridIndex);
+            WD.BlobWeaponElementData elementData;
+            if (TryGetWeaponElement(weaponId, out elementData) == false)
+                return;
 
+            Entity entity;
+            if (elementData.p_maxHeight == 0f)
+            {
+                Vector2 offset = endPos - startPos;
+                float maxDistance = math.length(offset);
+                Vector2 direction = maxDistance > 0f ? offset / maxDistance : new float2(1f, 0f);
+
+                entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+                BuildLinearMovement(entity, startPos, direction, elementData.p_speed, maxDistance);
+            }
+            else
+            {
+                entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+                BuildBezierMovement(entity, startPos, endPos, elementData.p_maxHeight, elementData.p_speed);
+            }
+
+            AttachTarget(entity, targetEleType, targetGridIndex);
             _entityManager.AddComponentData(entity, new WD.SingleTargetComponent());
         }
 
@@ -158,17 +184,21 @@ namespace WarField
         // otherDamage:主目标之外其他目标的伤害
         // canAttackBuilding:是否允许伤害建筑
         public void FireBezierShell(
-            long weaponId, WE.FactionType faction, float damage,
+            uint weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
-            Vector2 startPos, Vector2 endPos, float maxHeight, float speed,
+            Vector2 startPos, Vector2 endPos,
             float damageRange, float otherDamage, GameObject prefab, bool canAttackBuilding = true)
         {
             if (_beInited == false)
                 return;
 
+            WD.BlobWeaponElementData elementData;
+            if (TryGetWeaponElement(weaponId, out elementData) == false)
+                return;
+
             Entity entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
-            BuildBezierMovement(entity, startPos, endPos, maxHeight, speed);
+            BuildBezierMovement(entity, startPos, endPos, elementData.p_maxHeight, elementData.p_speed);
             AttachTarget(entity, targetEleType, targetGridIndex);
 
             WD.AreaDamageComponent areaComp = new WD.AreaDamageComponent();
@@ -178,35 +208,22 @@ namespace WarField
             _entityManager.AddComponentData(entity, areaComp);
         }
 
-        // 发射直线单体子弹 (如：火枪、平飞无抛物线的魔法)
-        public void FireLinearBullet(
-            long weaponId, WE.FactionType faction, float damage,
-            int casterMapId, int casterEleType, int casterGridIndex,
-            int targetEleType, int targetGridIndex, bool triggerSkill,
-            Vector2 startPos, Vector2 direction, float speed, float maxDistance, GameObject prefab)
-        {
-            if (_beInited == false)
-                return;
-
-            Entity entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
-            BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
-            AttachTarget(entity, targetEleType, targetGridIndex);
-
-            _entityManager.AddComponentData(entity, new WD.SingleTargetComponent());
-        }
-
         // 发射直线穿透技能 (如：风行者强力击、穿透激光)
         public void FireLinearNoTarget(
-            long weaponId, WE.FactionType faction, float damage,
+            uint weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
-            Vector2 startPos, Vector2 direction, float speed, float maxDistance,
+            Vector2 startPos, Vector2 direction, float maxDistance,
             float colliderRadius, GameObject prefab) // 删除了 maxPierceCount
         {
             if (_beInited == false)
                 return;
 
+            WD.BlobWeaponElementData elementData;
+            if (TryGetWeaponElement(weaponId, out elementData) == false)
+                return;
+
             Entity entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
-            BuildLinearMovement(entity, startPos, direction, speed, maxDistance);
+            BuildLinearMovement(entity, startPos, direction, elementData.p_speed, maxDistance);
 
             // 挂载判定范围组件
             WD.LinearPenetrationComponent penComp = new WD.LinearPenetrationComponent();
@@ -219,9 +236,117 @@ namespace WarField
 #endregion
 
 #region private functions
+        private bool BuildWeaponBlob()
+        {
+            ShutdownWeaponBlob();
+
+            if (_weaponConfig == null || _weaponConfig.p_allElementsBakedList == null)
+            {
+                GameLogger.LogError("WeaponCtrl: missing GlobalWeaponConfig");
+                return false;
+            }
+
+            List<WD.ElementWeaponBakedData> srcList = _weaponConfig.p_allElementsBakedList;
+            var validList = new List<WD.ElementWeaponBakedData>(srcList.Count);
+            var seenIds = new HashSet<uint>();
+
+            for (int i = 0; i < srcList.Count; i++)
+            {
+                WD.ElementWeaponBakedData src = srcList[i];
+                if (src == null || src.p_weaponId <= 0)
+                    continue;
+
+                uint weaponId = (uint)src.p_weaponId;
+                if (seenIds.Add(weaponId) == false)
+                {
+                    GameLogger.LogError($"WeaponCtrl: duplicate weaponId={weaponId} in GlobalWeaponConfig");
+                    continue;
+                }
+
+                validList.Add(src);
+            }
+
+            if (validList.Count == 0)
+            {
+                GameLogger.LogError("WeaponCtrl: GlobalWeaponConfig has no valid weapon entries");
+                return false;
+            }
+
+            using var builder = new BlobBuilder(Allocator.Temp);
+            ref WD.BlobWeaponDatabase root = ref builder.ConstructRoot<WD.BlobWeaponDatabase>();
+            BlobBuilderArray<WD.BlobWeaponElementData> blobElements = builder.Allocate(ref root.p_elements, validList.Count);
+
+            _weaponIdToIndex = new Dictionary<uint, int>(validList.Count);
+            for (int i = 0; i < validList.Count; i++)
+            {
+                WD.ElementWeaponBakedData src = validList[i];
+                uint weaponId = (uint)src.p_weaponId;
+
+                blobElements[i].p_weaponId = weaponId;
+                blobElements[i].p_speed = src.p_speed;
+                blobElements[i].p_maxHeight = src.p_maxHeight;
+                _weaponIdToIndex[weaponId] = i;
+            }
+
+            _weaponBlob = builder.CreateBlobAssetReference<WD.BlobWeaponDatabase>(Allocator.Persistent);
+
+            _weaponConfigSingletonEntity = _entityManager.CreateEntity(typeof(WD.WeaponConfigBlobSingleton));
+            _entityManager.SetComponentData(_weaponConfigSingletonEntity, new WD.WeaponConfigBlobSingleton
+            {
+                p_blobRef = _weaponBlob
+            });
+
+            return true;
+        }
+
+        private void ShutdownWeaponBlob()
+        {
+            if (_weaponConfigSingletonEntity != Entity.Null)
+            {
+                World world = World.DefaultGameObjectInjectionWorld;
+                if (world != null && world.IsCreated)
+                {
+                    EntityManager entityManager = world.EntityManager;
+                    if (entityManager.Exists(_weaponConfigSingletonEntity))
+                        entityManager.DestroyEntity(_weaponConfigSingletonEntity);
+                }
+
+                _weaponConfigSingletonEntity = Entity.Null;
+            }
+
+            if (_weaponBlob.IsCreated)
+            {
+                _weaponBlob.Dispose();
+                _weaponBlob = default;
+            }
+
+            _weaponIdToIndex = null;
+        }
+
+        private bool TryGetWeaponElement(uint weaponId, out WD.BlobWeaponElementData elementData)
+        {
+            elementData = default;
+
+            if (_weaponBlob.IsCreated == false || _weaponIdToIndex == null)
+            {
+                GameLogger.LogError("WeaponCtrl: weapon blob is not initialized");
+                return false;
+            }
+
+            if (_weaponIdToIndex.TryGetValue(weaponId, out int index) == false)
+            {
+                GameLogger.LogError($"WeaponCtrl: missing weapon config for weaponId={weaponId}");
+                return false;
+            }
+
+            ref WD.BlobWeaponDatabase database = ref _weaponBlob.Value;
+            elementData = database.p_elements[index];
+            return true;
+        }
+
         // 提取公共基础组件生成，消除重复代码
         private Entity CreateBaseProjectile(
-            EntityArchetype archetype, long weaponId, WE.FactionType faction, float damage,
+            EntityArchetype archetype, uint weaponId, WE.FactionType faction, float damage,
             int mapId, int casterEleType, int casterGridIndex, bool triggerSkill, GameObject prefab)
         {
             Entity entity = _entityManager.CreateEntity(archetype);

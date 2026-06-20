@@ -81,11 +81,11 @@ namespace WarField
             }
 
             int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
-            WeaponCtrl.Instance.FireBezierBullet(
+            WeaponCtrl.Instance.FireBullet(
                 _weaponId, _defenceConf.gs_faction, damage,
                 _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
                 (int)_rivalType, targetGridIndex, true,
-                startPos, targetPos, 20f, 20f, _weaponPfb);
+                startPos, targetPos, _weaponPfb);
         }
 
         protected override bool ChooseRival()

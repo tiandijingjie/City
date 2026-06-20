@@ -37,7 +37,7 @@ namespace WarField
         private RangedHero _rangedHero;
 
         private GameObject _arrowPfb;
-        [SerializeField] private int _arrowId;
+        [SerializeField] private uint _arrowId;
 #endregion
 
 #region private parameters' get set

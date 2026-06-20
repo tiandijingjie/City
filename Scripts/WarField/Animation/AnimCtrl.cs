@@ -22,7 +22,7 @@ namespace WarField
 
         [SerializeField] private GlobalAnimConfig _animConfig;
         [SerializeField] private float _animFPS = 12; //全局FPS(不影响特效特效的帧率)
-        private Dictionary<uint, BlobAssetReference<BlobElementData>> _animBlobs;
+        private Dictionary<uint, BlobAssetReference<BlobAnimData>> _animBlobs;
 
         // ECS
         private Dictionary<uint, ElementAnimBakedData> _bakedDataDict;
@@ -95,7 +95,7 @@ namespace WarField
             }
             Instance = this;
 
-            _animBlobs    = new Dictionary<uint, BlobAssetReference<BlobElementData>>();
+            _animBlobs    = new Dictionary<uint, BlobAssetReference<BlobAnimData>>();
             _bakedDataDict = new Dictionary<uint, ElementAnimBakedData>();
 
             _entityManager  = World.DefaultGameObjectInjectionWorld.EntityManager;
@@ -532,7 +532,7 @@ namespace WarField
         }
 
         //初始化时候将animId和BlobElementData绑定, 将stateID和BlobStateData绑定
-        public bool BindAnimWithEntity(uint eleAnimId, string entityName, Dictionary<string, uint> stateDic, out BlobAssetReference<BlobElementData> blobRef)
+        public bool BindAnimWithEntity(uint eleAnimId, string entityName, Dictionary<string, uint> stateDic, out BlobAssetReference<BlobAnimData> blobRef)
         {
             blobRef = default;
 
@@ -553,7 +553,7 @@ namespace WarField
             }
 
             using var builder = new BlobBuilder(Allocator.Temp);
-            ref BlobElementData root = ref builder.ConstructRoot<BlobElementData>();
+            ref BlobAnimData root = ref builder.ConstructRoot<BlobAnimData>();
             root.p_eleAnimId = eleAnimId;
 
             int stateCount = conf.p_stateAnim.Count;
@@ -588,7 +588,7 @@ namespace WarField
                 }
             }
 
-            var blob = builder.CreateBlobAssetReference<BlobElementData>(Allocator.Persistent);
+            var blob = builder.CreateBlobAssetReference<BlobAnimData>(Allocator.Persistent);
             _animBlobs.Add(eleAnimId, blob);
             // 所有 state 都成功映射后才记录 baked 数据，避免一致性不匹配
             _bakedDataDict[eleAnimId] = conf;

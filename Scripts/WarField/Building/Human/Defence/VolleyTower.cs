@@ -98,11 +98,11 @@ namespace WarField
                     Soldier rivalSd = (Soldier)_rivalScriptList.GetByIndex(i);
                     Vector2 targetPos = rivalSd.gs_bullectTargetPos;
                     int targetGridIndex = rivalSd.gs_gridIndex;
-                    WeaponCtrl.Instance.FireBezierBullet(
+                    WeaponCtrl.Instance.FireBullet(
                         _weaponId, _defenceConf.gs_faction, _defenceConf.gs_damage,
                         _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
                         (int)WE.WarEleType.SOLDIER, targetGridIndex, true,
-                        startPos, targetPos, 20f, 20f, _weaponPfb);
+                        startPos, targetPos, _weaponPfb);
                 }
             }
         }
