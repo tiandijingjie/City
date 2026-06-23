@@ -9,6 +9,7 @@ namespace WarField
 {
     using SD = SoldierDefines;
     using WE = WarFieldElements;
+    using WD = WeaponDefines;
 
     //远程英雄
     public class RangedHero : Hero
@@ -19,10 +20,7 @@ namespace WarField
 
 #region private parameters
         [SerializeField] protected GameObject _weaponPfb = null;
-        [SerializeField] protected SD.RemoteAttackStartPosition _shootPos; //出手射击的位置
-
-        protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected uint _weaponId;
+        [SerializeField] protected WD.WeaponId _weaponId;
 #endregion
 
 #region private parameters' get set
@@ -35,13 +33,6 @@ namespace WarField
             base.Awake();
 
             _isRemote = true;
-            if (_shootPos == SD.RemoteAttackStartPosition.OVERHEAD)
-                _shootOffset = _halfBodySize * 2;
-            else if (_shootPos == SD.RemoteAttackStartPosition.OVERSHOULDER)
-            {
-                var value = _halfBodySize * 2;
-                _shootOffset = new Vector2(value.x, value.y * 2 / 3); //从2/3高度位置出手
-            }
 
             if (_weaponPfb == null)
                 GameLogger.LogError($"{name}, not set weapon prefab");
@@ -77,7 +68,7 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WE.WarEleType rivalType)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 targetPos = Vector2.zero;
             if (rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
@@ -93,10 +84,10 @@ namespace WarField
         }
 
         //根据技能需要射出一些特殊的arrow
-        public void ShootSpecialWeaponTo(GameObject weaponPfb, uint weaponId, Vector3 startOffset, GameObject target, WE.WarEleType targetType,
+        public void ShootSpecialWeaponTo(GameObject weaponPfb, WD.WeaponId weaponId, Vector3 startOffset, GameObject target, WE.WarEleType targetType,
             MonoBehaviour rivalScript, float damage)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 targetPos = Vector2.zero;
             if (targetType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;

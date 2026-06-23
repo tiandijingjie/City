@@ -13,7 +13,6 @@ namespace WarField.Anim
         [HideInInspector] public Material p_sharedMaterial;
         [HideInInspector] public Matrix4x4 p_localMatrix;
 
-
 #endregion
 
 #region private parameters
@@ -125,6 +124,14 @@ namespace WarField.Anim
             MeshFilter mf = GetComponent<MeshFilter>();
             if (mf != null)
                 p_mesh = mf.sharedMesh;
+
+            // 优先使用烘焙工具（Frame2TextureArray）生成的八角 Mesh 替换 prefab 上的 Quad。
+            // 八角 Mesh 按全帧 alpha 包围盒收紧，切掉四角透明区域，可减少约 20%~35% 的 Fragment 浪费。
+            // 若 AnimCtrl 里对应的 ElementAnimBakedData.p_bakedMesh 为 null（未重新烘焙或旧资产），
+            // 则自动回退到 prefab 上的 MeshFilter.sharedMesh，行为与之前完全一致，不影响画面。
+            Mesh bakedMesh = AnimCtrl.Instance.GetBakedMesh(_eleAnimId);
+            if (bakedMesh != null)
+                p_mesh = bakedMesh;
 
             MeshRenderer mr = GetComponent<MeshRenderer>();
             if (mr != null)

@@ -66,7 +66,7 @@ namespace WarField
                 }
             }
 
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 targetPos = Vector2.zero;
             float damage = 0;
             if (_rivalType == WE.WarEleType.SOLDIER)

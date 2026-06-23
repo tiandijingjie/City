@@ -110,8 +110,8 @@ namespace WarField
         protected Skill _skillInAnim; //point to the skill of the animation is playing, call SkillAnimFinish
         protected AnimRenderProxy _animProxy;
 
-        //half of soldier body size, used for calculate the bullect shoot out  position
-        protected Vector2 _halfBodySize;
+        protected BulletTargetPos _bulletTargetPos;
+        protected FirePos _firePos;
 
         //protector behavior mode
         protected INeedBeProtect _protectTarget; //守护的建筑
@@ -189,10 +189,7 @@ namespace WarField
 
         public Vector2 gs_bullectTargetPos
         {
-            get
-            {
-                return _transform.position + new Vector3(_halfBodySize.x * _transform.localScale.x, _halfBodySize.y, 0);
-            }
+            get { return (Vector2)_transform.position + _bulletTargetPos.gs_offset; }
         }
 
         public WE.RaceType gs_race
@@ -270,8 +267,10 @@ namespace WarField
             _needBindMiniMap = true;
             _warEleType = WE.WarEleType.SOLDIER;
             _moveSpeed = Vector3.zero;
-
-            _halfBodySize = new Vector2(0.5f, 0.5f);
+            _bulletTargetPos = GetComponent<BulletTargetPos>();
+            if(_bulletTargetPos == null)
+                GameLogger.LogError($"{gameObject.name}: bulletTargetPos not found");
+            _firePos = GetComponent<FirePos>();
 
             _curStatus = SD.SoldierStatus.INIT; //不能调用ChangeStatusTo,因为这个时候entity还没有被创建出来
             _rivalChooseType = SD.TargetDetectType.MIN;
@@ -361,84 +360,84 @@ namespace WarField
 #if UNITY_EDITOR
         protected virtual void OnDrawGizmos()
         {
-            // if(_debugRange == false)
-            //     return;
-            //
-            // Vector3 realCenter = transform.position ;
-            //
-            // Gizmos.color = Color.cyan;
-            // Gizmos.DrawWireSphere(realCenter, _curState.p_searchRange);
-            // Gizmos.color = Color.red;
-            // Gizmos.DrawWireSphere(realCenter, _curState.p_attackRange);
+            if(_debugRange == false)
+                return;
 
-            // if (_cmdTargetPos != GD.InvalidVector2) //绘制目标位置
-            // {
-            //     // 将 Vector2 包装成当前层级的 Vector3 坐标
-            //     Vector3 target3D = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
-            //
-            //     //在点击处画一个红色的实心中心定位球
-            //     Gizmos.color = Color.red;
-            //     Gizmos.DrawSphere(target3D, 0.22f);
-            //
-            //     //外围追加一个大圆环，防止视角拉得太高时看不清
-            //     Gizmos.DrawWireSphere(target3D, 0.5f);
-            //
-            //     //画一个标志性的 Rts 红十字准心线，彻底钉死世界坐标
-            //     Gizmos.DrawLine(target3D + Vector3.left * 1.0f, target3D + Vector3.right * 1.0f);
-            //     Gizmos.DrawLine(target3D + Vector3.down * 1.0f, target3D + Vector3.up * 1.0f);
-            //
-            //     // 从当前位置拉一条紫色的激光牵引线连接到目标点，明确当前单位正在对齐哪个指令
-            //     Gizmos.color = Color.magenta;
-            //     Gizmos.DrawLine(transform.position, target3D);
-            // }
+            Vector3 realCenter = transform.position;
 
-            // if (_aStarWaypoints != null && _aStarWaypoints.Count > 0)
-            // {
-            //     // 用绿色绘制路径主干线段
-            //     Gizmos.color = Color.green;
-            //
-            //     // 绘制从当前位置到下一个拐弯点的连线
-            //     if (_currentWaypointIndex < _aStarWaypoints.Count)
-            //     {
-            //         Vector3 currentPos = transform.position;
-            //         Vector3 nextWaypoint = new Vector3(_aStarWaypoints[_currentWaypointIndex].x, _aStarWaypoints[_currentWaypointIndex].y, currentPos.z);
-            //         Gizmos.DrawLine(currentPos, nextWaypoint);
-            //     }
-            //
-            //     // 依次绘制后续各拐弯点之间的连线
-            //     for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count - 1; i++)
-            //     {
-            //         Vector3 startNode = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
-            //         Vector3 endNode = new Vector3(_aStarWaypoints[i + 1].x, _aStarWaypoints[i + 1].y, transform.position.z);
-            //         Gizmos.DrawLine(startNode, endNode);
-            //     }
-            //
-            //     // 用黄色高亮球体标记所有尚未踩完的路径节点（路标点）
-            //     Gizmos.color = Color.yellow;
-            //     for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count; i++)
-            //     {
-            //         Vector3 waypointPos = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
-            //         Gizmos.DrawSphere(waypointPos, 0.15f); // 0.15半径的小球
-            //     }
-            //
-            //     // 用红球单独标出 A* 终点
-            //     Gizmos.color = Color.red;
-            //     Vector3 finalTargetPos = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
-            //     Gizmos.DrawSphere(finalTargetPos, 0.22f);
-            // }
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(realCenter, _curState.p_searchRange);
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(realCenter, _curState.p_attackRange);
+
+            if (_cmdTargetPos != GD.InvalidVector2) //绘制目标位置
+            {
+                // 将 Vector2 包装成当前层级的 Vector3 坐标
+                Vector3 target3D = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
+
+                //在点击处画一个红色的实心中心定位球
+                Gizmos.color = Color.red;
+                Gizmos.DrawSphere(target3D, 0.22f);
+
+                //外围追加一个大圆环，防止视角拉得太高时看不清
+                Gizmos.DrawWireSphere(target3D, 0.5f);
+
+                //画一个标志性的 Rts 红十字准心线，彻底钉死世界坐标
+                Gizmos.DrawLine(target3D + Vector3.left * 1.0f, target3D + Vector3.right * 1.0f);
+                Gizmos.DrawLine(target3D + Vector3.down * 1.0f, target3D + Vector3.up * 1.0f);
+
+                // 从当前位置拉一条紫色的激光牵引线连接到目标点，明确当前单位正在对齐哪个指令
+                Gizmos.color = Color.magenta;
+                Gizmos.DrawLine(transform.position, target3D);
+            }
+
+            if (_aStarWaypoints != null && _aStarWaypoints.Count > 0)
+            {
+                // 用绿色绘制路径主干线段
+                Gizmos.color = Color.green;
+
+                // 绘制从当前位置到下一个拐弯点的连线
+                if (_currentWaypointIndex < _aStarWaypoints.Count)
+                {
+                    Vector3 currentPos = transform.position;
+                    Vector3 nextWaypoint = new Vector3(_aStarWaypoints[_currentWaypointIndex].x, _aStarWaypoints[_currentWaypointIndex].y, currentPos.z);
+                    Gizmos.DrawLine(currentPos, nextWaypoint);
+                }
+
+                // 依次绘制后续各拐弯点之间的连线
+                for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count - 1; i++)
+                {
+                    Vector3 startNode = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
+                    Vector3 endNode = new Vector3(_aStarWaypoints[i + 1].x, _aStarWaypoints[i + 1].y, transform.position.z);
+                    Gizmos.DrawLine(startNode, endNode);
+                }
+
+                // 用黄色高亮球体标记所有尚未踩完的路径节点（路标点）
+                Gizmos.color = Color.yellow;
+                for (int i = _currentWaypointIndex; i < _aStarWaypoints.Count; i++)
+                {
+                    Vector3 waypointPos = new Vector3(_aStarWaypoints[i].x, _aStarWaypoints[i].y, transform.position.z);
+                    Gizmos.DrawSphere(waypointPos, 0.15f); // 0.15半径的小球
+                }
+
+                // 用红球单独标出 A* 终点
+                Gizmos.color = Color.red;
+                Vector3 finalTargetPos = new Vector3(_cmdTargetPos.x, _cmdTargetPos.y, transform.position.z);
+                Gizmos.DrawSphere(finalTargetPos, 0.22f);
+            }
         }
 
         protected virtual void OnDrawGizmosSelected()
         {
-            // if(_debugRange == true)
-            //     return;
-            //
-            // Vector3 realCenter = transform.position ;
-            //
-            // Gizmos.color = Color.cyan;
-            // Gizmos.DrawWireSphere(realCenter, _curState.p_searchRange);
-            // Gizmos.color = Color.red;
-            // Gizmos.DrawWireSphere(realCenter, _curState.p_attackRange);
+            if(_debugRange == true)
+                return;
+
+            Vector3 realCenter = transform.position ;
+
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(realCenter, _curState.p_searchRange);
+            Gizmos.color = Color.red;
+            Gizmos.DrawWireSphere(realCenter, _curState.p_attackRange);
         }
 #endif
 
@@ -737,7 +736,14 @@ namespace WarField
             }
             else if (_enableAttackCollider == true && _curState.p_attackRange > 0)
             {
-                float range = _curState.p_attackSpeed;
+                float range = _curState.p_attackRange;
+                _rivalSearchShape.p_radius = range;
+                _rivalSearchShape.p_radiusSq = range * range;
+            }
+            else if (_curState.p_searchRange > 0)
+            {
+                // 远程单位不使用物理碰撞体，直接用 searchRange 驱动 Job 搜索
+                float range = _curState.p_searchRange;
                 _rivalSearchShape.p_radius = range;
                 _rivalSearchShape.p_radiusSq = range * range;
             }
@@ -1047,7 +1053,7 @@ namespace WarField
                         {
                             if (_enableSearchCollider == false || _curState.p_searchRange == 0)
                             {
-                                float range = _curState.p_attackSpeed;
+                                float range = _curState.p_attackRange;
                                 _rivalSearchShape.p_radius = range;
                                 _rivalSearchShape.p_radiusSq = range * range;
                             }
@@ -1245,7 +1251,7 @@ namespace WarField
                         {
                             if (_enableSearchCollider == false || _curState.p_searchRange == 0)
                             {
-                                float range = _curState.p_attackSpeed;
+                                float range = _curState.p_attackRange;
                                 _rivalSearchShape.p_radius = range;
                                 _rivalSearchShape.p_radiusSq = range * range;
                             }

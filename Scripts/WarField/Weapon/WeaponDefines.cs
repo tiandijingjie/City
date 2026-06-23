@@ -21,12 +21,19 @@ namespace WarField
             MAX,
         }
 
-        [Serializable]
-        public class ElementWeaponBakedData //用于读取全局配置asset,然后转成blob
+        public enum WeaponId
         {
-            public long p_weaponId; //每种weapon一个ID
-            public float p_speed; //飞行速度
-            public float p_maxHeight; //飞行最大高度
+            MIN = 0,
+            ARCHERWEAPON = 110000,
+            MAX,
+        }
+
+        [Serializable]
+        public class ElementWeaponBakedData
+        {
+            public WeaponId p_weaponId;
+            public float p_speed;
+            public float p_maxHeight;
         }
 
         // Blob Asset, 将 ElementWeaponBakedData 中数据提取出来

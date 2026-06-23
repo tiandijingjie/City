@@ -24,7 +24,7 @@ namespace WarField
 
         [SerializeField] private GameObject _skillArrow;
 
-        [SerializeField] private uint _skillWeaponId; //蓄力击
+        [SerializeField] private WD.WeaponId _skillWeaponId; //蓄力击
 
         private bool _needAttackSecondRival;
         private float _secondAttackDamageTimes;
@@ -96,7 +96,7 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WE.WarEleType rivalType)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 targetPos = Vector2.zero;
             if (rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
@@ -130,7 +130,7 @@ namespace WarField
         {
             if (target != null)
             {
-                Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+                Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
                 Soldier secondTarget = (Soldier)target;
                 WeaponCtrl.Instance.FireBullet(
                     _weaponId, _faction, _mainDamage * _secondAttackDamageTimes,
@@ -145,7 +145,7 @@ namespace WarField
         //TODO 需要每一帧去计算箭头范围内的敌人然后造成伤害
         public void SharpShootShootChargeStrike(float distance, float damage)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 referencePos;
 
             if (_rivalScript == null)

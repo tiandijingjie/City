@@ -54,8 +54,8 @@ namespace WarField
             if (_canWork == false)
                 return;
 
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
-            Vector2 targetPos = ((Soldier)_rivalScript).gs_bullectTargetPos;
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position; //使用
+            Vector2 targetPos = (Vector2)_rivalScript.transform.position;
             int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
 
             WeaponCtrl.Instance.FireBezierShell(

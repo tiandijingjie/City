@@ -10,6 +10,7 @@ namespace WarField
 {
     using WE = WarFieldElements;
     using WBD = WarBuildingDefines;
+    using WD = WeaponDefines;
 
     public class DefenceBuilding : WarBuilding
     {
@@ -23,8 +24,7 @@ namespace WarField
         [SerializeField] protected bool _canAttackBuilding = false; //绝大部份塔都不能攻击建筑
         [SerializeField] protected DefenceConf _defenceConf = null; //just the _bdConf
 
-        protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected uint _weaponId;
+        [SerializeField] protected WD.WeaponId _weaponId;
 
         protected DataPool<GameObject>[] _rivalInRange;
         protected WE.WarEleType _rivalType;
@@ -145,12 +145,6 @@ namespace WarField
                 _rangeCollider.radius = _defenceConf.gs_atkRange;
             else if (ReferenceEquals(_rangeCollider, null) == false)
                 _rangeCollider.enabled = false;
-
-            var value = _halfBodySize * 2;
-            if (_defenceConf.gs_faction == WE.FactionType.FRIENDLY)
-                _shootOffset = new Vector2(value.x, value.y); //从右上角位置出手
-            else if (_defenceConf.gs_faction == WE.FactionType.ENEMY)
-                _shootOffset = new Vector2(0, value.y); //从左上角位置出手
 
             if (ReferenceEquals(_weaponPfb, null))
                 GameLogger.LogError($"{name}, not set weapon prefab");
@@ -327,13 +321,6 @@ namespace WarField
         {
             _nextAttackInterval += _defenceConf.gs_atkSpeedCycle;
 
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
-            Vector2 targetPos = Vector2.zero;
-            if (_rivalType == WE.WarEleType.SOLDIER)
-                targetPos = ((Soldier)_rivalScript).gs_bullectTargetPos;
-            else if (_rivalType == WE.WarEleType.BUILDING)
-                targetPos = ((WarBuilding)_rivalScript).gs_bullectTargetPos;
-
             float damage = _defenceConf.gs_damage;
             if (_isInCave == true)
                 damage += _defenceConf.gs_caveAttackAdd;
@@ -341,10 +328,17 @@ namespace WarField
             if (damage <= 0)
                 return;
 
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             int targetGridIndex = ((WarEleParent)_rivalScript).gs_gridIndex;
 
             if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.BULLET)
             {
+                Vector2 targetPos = Vector2.zero;
+                if (_rivalType == WE.WarEleType.SOLDIER)
+                    targetPos = ((Soldier)_rivalScript).gs_bullectTargetPos;
+                else if (_rivalType == WE.WarEleType.BUILDING)
+                    targetPos = ((WarBuilding)_rivalScript).gs_bullectTargetPos;
+
                 WeaponCtrl.Instance.FireBullet(
                     _weaponId, _defenceConf.gs_faction, damage,
                     _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,
@@ -353,6 +347,8 @@ namespace WarField
             }
             else if (_defenceConf.gs_weaponType == WeaponDefines.ProjectileTypes.SHELL)
             {
+                Vector2 targetPos = (Vector2)_rivalScript.transform.position;
+
                 WeaponCtrl.Instance.FireBezierShell(
                     _weaponId, _defenceConf.gs_faction, damage,
                     _mapId, (int)WE.WarEleType.BUILDING, gs_gridIndex,

@@ -34,13 +34,8 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WarFieldElements.WarEleType rivalType)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
-            Vector2 targetPos = Vector2.zero;
-            if (rivalType == WE.WarEleType.SOLDIER)
-                targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;
-            else if (rivalType == WE.WarEleType.BUILDING)
-                targetPos = ((WarBuilding)rivalScript).gs_bullectTargetPos;
-
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
+            Vector2 targetPos = (Vector2)rivalScript.transform.position;
             int targetGridIndex = ((WarEleParent)rivalScript).gs_gridIndex;
             WeaponCtrl.Instance.FireBezierShell(
                 _weaponId, _faction, damage,

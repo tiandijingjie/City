@@ -268,6 +268,8 @@ namespace WarField
                 _flowFieldBlockers.Dispose();
             if (_homeTargetIndices.IsCreated)
                 _homeTargetIndices.Dispose();
+            if (_emptyTargetIndices.IsCreated)
+                _emptyTargetIndices.Dispose();
 
             if (_isAStarJobRunning)
             {
@@ -317,10 +319,12 @@ namespace WarField
             for (int i = WE.LocalFlowFieldStartId; i < _currentMaxFlowFields; i++)
                 _availableFlowIndices.Enqueue(i);
 
-            if (_homeTargetIndices.IsCreated) _homeTargetIndices.Dispose();
-            if (_emptyTargetIndices.IsCreated) _emptyTargetIndices.Dispose();
+            if (_homeTargetIndices.IsCreated)
+                _homeTargetIndices.Dispose();
+            if (_emptyTargetIndices.IsCreated)
+                _emptyTargetIndices.Dispose();
+
             _homeTargetIndices = new NativeList<int>(16, Allocator.Persistent);
-            if (_emptyTargetIndices.IsCreated) _emptyTargetIndices.Dispose();
             _emptyTargetIndices = new NativeArray<int>(0, Allocator.Persistent);
 
             BakeStaticObstacles();

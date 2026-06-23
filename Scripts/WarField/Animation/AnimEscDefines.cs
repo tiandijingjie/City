@@ -24,7 +24,7 @@ namespace WarField.Anim
 
     public struct BlobAnimData
     {
-        public AnimEneityId p_eleAnimId; //每种entity一个id
+        public AnimEneityId p_eleAnimId; //每种entity一个id, 目前没用到
         public BlobArray<BlobStateData> p_states;
     }
 

@@ -813,7 +813,7 @@ namespace WarField
 
 #region private functions
 
-        // 把 GlobalAnimConfig 里的 StateAnimData 按 SoldierAnimType 枚举名映射成运行时字典.
+        // 把 CharacterAnimConf.xml 里的 StateAnimData 按 SoldierAnimType 枚举名映射成运行时字典.
         // 不再区分 "默认变体" 与 "所有变体列表"——StateAnimData 本身包含所有变体,
         // Soldier 的 SelectRandomAnimVariation 在切换动画时随机选一个变体索引即可.
         private Dictionary<SD.SoldierAnimType, StateAnimData> BuildSoldierAnimStateClips(ElementAnimBakedData elementData)

@@ -61,7 +61,7 @@ namespace WarField.Anim
     }
 
     [Serializable]
-    public class ElementAnimBakedData //用于读取全局配置asset,然后转成blob
+    public class ElementAnimBakedData //用于读取配置文件,然后转成blob
     {
         public string p_elementName;
         public List<StateAnimData> p_stateAnim = new List<StateAnimData>();
@@ -89,6 +89,14 @@ namespace WarField.Anim
 
             return null;
         }
+    }
+
+    // 运行时从 JSON 文件（{name}_AnimData.json）反序列化 p_stateAnim 数据的包装类。
+    // Frame2TextureArray 烘焙工具写入，AnimCtrl.Awake 通过 Resources.Load<TextAsset> 读取。
+    [Serializable]
+    public class AnimDataWrapper
+    {
+        public List<StateAnimData> p_stateAnim = new List<StateAnimData>();
     }
 
     //用来获取animation需要的id

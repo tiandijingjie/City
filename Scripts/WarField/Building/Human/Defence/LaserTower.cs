@@ -32,10 +32,9 @@ namespace WarField
 
         private List<LaserInfo> _laserInfos;
         private DataPool<GameObject> _rivalNotAttack; //范围内没有被攻击的目标
-        private DataPool<GameObject> _rivalInAttack; //范围内已经被攻击的目标
+        private DataPool<GameObject> _rivalInAttack; //范围内正在被攻击的目标
         private int _laserMaxCount, _laserCount;
         private float _bombRange, _bombDamage;
-        private object _explosionObj;
 
         private object _listLock = new object();
 #endregion
@@ -75,7 +74,8 @@ namespace WarField
                 _laserInfos.Add(laserInfo);
             }
 
-            _explosionObj = (_bombDamage, _bombRange, WE.FactionType.FRIENDLY);
+            // Bind explosion VFX once per element type (harmless if called by multiple towers)
+            EffectCtrl.Instance.BindEffectAnimWithEntity((uint)ED.EffectType.EXPLOSION, "Explosion", out _);
             _laserCount = 0;
             return true;
         }
@@ -192,7 +192,8 @@ namespace WarField
         {
             bool isDie = laserInfo.p_rival.BeAttacked(gameObject, this, WE.WarEleType.BUILDING, _defenceConf.gs_damage, true, true,
                 out float hitValue);
-            //not remove target here, RivalOutRange will do it
+            if(isDie == true)
+                TargetRemove(laserInfo);
         }
 
         private void TargetRemove(LaserInfo laserInfo)
@@ -201,7 +202,7 @@ namespace WarField
                 return;
 
             if(laserInfo.p_rival.gs_curStatus == SD.SoldierStatus.DIE || laserInfo.p_rival.gs_curStatus == SD.SoldierStatus.MIN)
-                Explode(laserInfo.p_rival);
+                Explode(laserInfo.p_rival);  //rival被打死了 爆炸
             laserInfo.p_laser.enabled = false;
             laserInfo.p_rival = null;
             laserInfo.p_nextAttackInterval = 0;
@@ -239,7 +240,36 @@ namespace WarField
 
         private void Explode(Soldier rivalSd)
         {
-            EffectCtrl.Instance.AddEffectAt(rivalSd.gs_transform.position, ED.EffectType.EXPLOSION, _mapId, _explosionObj);
+            Vector3 pos = rivalSd.gs_transform.position;
+
+            CircleAreaEffectAnim ca = EffectCtrl.Instance.AcquireCircleAreaEffect();
+            ca.p_effectAnimId   = (uint)ED.EffectType.EXPLOSION;
+            ca.p_worldPos       = pos;
+            ca.p_searchRadius   = _bombRange;
+            ca.p_mapId          = _mapId;
+            ca.p_targetFaction  = WE.FactionType.ENEMY;
+            ca.p_searchTarget   = CircleAreaEffectAnim.SearchTarget.Soldier;
+            ca.p_onTargetsFound = OnExplosionTargets;
+            ca.p_onEvent        = OnExplosionEvent;
+            ca.p_searchTime = SearchManager.Instance.GetTimeForASyncSearchCnt(1); //异步查询一次
+
+            EffectHandle handle = EffectCtrl.Instance.AddEffectAt(pos, ca);
+            ca.Activate(handle);
+        }
+
+        private void OnExplosionTargets(List<IGridNode> targets, CircleAreaEffectAnim anim)
+        {
+            for (int i = 0; i < targets.Count; i++)
+            {
+                if (targets[i] is Soldier sd)
+                    sd.BeAttacked(null, null, WE.WarEleType.MIN, _bombDamage, false, false, out _);
+            }
+        }
+
+        private void OnExplosionEvent(int eventId, CircleAreaEffectAnim anim)
+        {
+            if(eventId != -1)
+                anim.StartSearch();
         }
 
         protected override void OnConfUpgradeNotification(string changeName, float oriValue)
@@ -248,7 +278,6 @@ namespace WarField
             {
                 case "bombRange":
                     _bombRange = _defenceConf.gs_specConfs["bombRange"];
-                    _explosionObj = (_bombDamage, _bombRange, WE.FactionType.FRIENDLY);
                     break;
                 case "laserCnt": //不加锁，因为只会添加，不会减少，同时先加list，再改变_laserMaxCount
                 {

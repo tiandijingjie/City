@@ -37,15 +37,6 @@ namespace WarField
             MAX,
         }
 
-        //远程攻击出手的位置 （远程，魔法）
-        public enum RemoteAttackStartPosition
-        {
-            MIN = 0,
-            OVERHEAD,  //从头顶向斜上方射击
-            OVERSHOULDER, //从肩膀平射
-            MAX,
-        }
-
         //如果要增加status，一定要检查soldier中调用的IsEnumInRange的代码，是否仍然满足判断条件 ！！！
         public enum SoldierStatus
         {

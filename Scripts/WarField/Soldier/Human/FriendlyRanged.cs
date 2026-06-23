@@ -19,10 +19,8 @@ namespace WarField
 
         [SerializeField] protected HumanDefines.RangedType _sdType;
         [SerializeField] protected GameObject _weaponPfb = null;
-        [SerializeField] protected SD.RemoteAttackStartPosition _shootPos; //出手射击的位置
 
-        protected Vector3 _shootOffset; //bullet start positon offset according to the transform.position
-        [SerializeField] protected uint _weaponId;
+        protected WD.WeaponId _weaponId = WD.WeaponId.MIN;
 
 #endregion
 
@@ -42,13 +40,6 @@ namespace WarField
             base.Awake();
             _enableSearchCollider = false;
             _isRemote = true;
-            if (_shootPos == SD.RemoteAttackStartPosition.OVERHEAD)
-                _shootOffset = _halfBodySize * 2;
-            else if (_shootPos == SD.RemoteAttackStartPosition.OVERSHOULDER)
-            {
-                var value = _halfBodySize * 2;
-                _shootOffset = new Vector2(value.x, value.y * 2 / 3); //从2/3高度位置出手
-            }
 
             if (_weaponPfb == null)
                 GameLogger.LogError($"{_sdName}, not set weapon prefab");
@@ -60,7 +51,7 @@ namespace WarField
 
         public override void RemoteRangedAttack(float damage, MonoBehaviour rivalScript, WE.WarEleType rivalType)
         {
-            Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+            Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
             Vector2 targetPos = Vector2.zero;
             if (rivalType == WE.WarEleType.SOLDIER)
                 targetPos = ((Soldier)rivalScript).gs_bullectTargetPos;

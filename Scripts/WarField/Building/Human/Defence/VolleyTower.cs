@@ -94,7 +94,7 @@ namespace WarField
                 int count = _rivalList.Count;
                 for (int i = 0; i < count; i++)
                 {
-                    Vector2 startPos = (Vector2)(_transform.position + _shootOffset);
+                    Vector2 startPos = _firePos != null ? _firePos.GetFirePos(_transform.position, _currentDirIndex) : (Vector2)_transform.position;
                     Soldier rivalSd = (Soldier)_rivalScriptList.GetByIndex(i);
                     Vector2 targetPos = rivalSd.gs_bullectTargetPos;
                     int targetGridIndex = rivalSd.gs_gridIndex;

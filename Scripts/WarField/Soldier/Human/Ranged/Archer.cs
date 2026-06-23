@@ -6,7 +6,8 @@ namespace WarField
 {
     using SD = SoldierDefines;
     using WE = WarFieldElements;
-    
+    using WD = WeaponDefines;
+
     //弓箭手
     public class Archer : FriendlyRanged
     {
@@ -24,6 +25,12 @@ namespace WarField
 
 #region Unity callbacks
 
+        protected override void Awake()
+        {
+            base.Awake();
+            _weaponId = WD.WeaponId.ARCHERWEAPON;
+        }
+
 #endregion
 
 #region public functions
@@ -31,7 +38,7 @@ namespace WarField
 #endregion
 
 #region private functions
-        
+
 #endregion
     }
 }

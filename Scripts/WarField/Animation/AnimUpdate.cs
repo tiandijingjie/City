@@ -9,7 +9,7 @@ namespace WarField.Anim
 {
     //AnimUpdateSystem 和 AnimationUpdateJob 一起负责更新动画帧
 
-    // 用独立静态类持有全局 fps，完全绕开 Burst struct 的静态字段限制。
+    // 用独立静态类持有全局 fps，完全绕开 Burst struct 的静态字段限制。ecs中无法读取AnimCtrl._animFPS   这是一个workaround
     // AnimCtrl.LateUpdate 每帧写入，AnimUpdateSystem.OnUpdate 读取（均在主线程，无竞态）。
     public static class AnimGlobalData
     {
@@ -42,6 +42,7 @@ namespace WarField.Anim
         // 全局基准 fps，由 AnimCtrl._animFPS 通过 AnimGlobalData 驱动
         public float p_animFPS;
 
+        //会在后台自动Query所有带有AnimationRuntimeState的entity, 在AnimRenderProxy给entity挂上这个component
         public void Execute(ref AnimationRuntimeState runtimeState)
         {
             if (runtimeState.p_elementBlobRef.IsCreated == false)

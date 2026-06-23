@@ -36,8 +36,8 @@ namespace WarField
         protected BuildingConf _bdConf;
         protected CircleCollider2D _rangeCollider; //攻击范围
 
-        //half of building picture size, used for calculate the bullect target position
-        protected Vector2 _halfBodySize;
+        protected BulletTargetPos _bulletTargetPos;
+        protected FirePos _firePos;
         protected bool _isDestroyed = false;
         protected bool _canWork;
 
@@ -52,6 +52,7 @@ namespace WarField
         //anim
         protected SkeletonAnimation _bdAnimator;
         protected bool _hasAnimator = false;
+        protected int _currentDirIndex = 0; //帧动画的方向
 
         //color, 建筑有时被选中会显示不同颜色
         protected Color _bdColor = Color.white;
@@ -103,7 +104,9 @@ namespace WarField
         {
             get
             {
-                return _transform.position + new Vector3(_halfBodySize.x * _transform.localScale.x, _halfBodySize.y, 0);
+                if (_bulletTargetPos != null)
+                    return (Vector2)_transform.position + _bulletTargetPos.gs_offset;
+                return _transform.position;
             }
         }
 
@@ -124,6 +127,8 @@ namespace WarField
             base.Awake();
             _needBindMiniMap = true;
             _warEleType = WE.WarEleType.BUILDING;
+            _bulletTargetPos = GetComponent<BulletTargetPos>();
+            _firePos = GetComponent<FirePos>();
             _bdSpriteRenderer = _transform.Find("BdSprite").GetComponent<SpriteRenderer>();
             Transform bdRange = _transform.Find("Range");
             if(bdRange != null)
@@ -479,7 +484,6 @@ namespace WarField
             if (ReferenceEquals(_bdConf.gs_pic, null) == false)
             {
                 _bdSpriteRenderer.sprite = _bdConf.gs_pic;
-                _halfBodySize = _bdConf.gs_pic.rect.size / (2 * GD.PixelPerUnit); //should change to box collide2D
             }
 
             _transform.position = new Vector3(_transform.position.x, _transform.position.y, WarFieldUtil.GetZByY(_transform.position.y, WarMapCtrl

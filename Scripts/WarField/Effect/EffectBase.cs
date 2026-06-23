@@ -8,6 +8,14 @@ namespace WarField
 {
     using ED = EffectDefines;
 
+    // OBSOLETE — EffectBase and all subclasses (SkillEffect*, EffectFrozen, etc.) are
+    // scheduled for removal.  Migrate each effect to the ECS EffectAnim pipeline:
+    //   1. Implement IEffectAnimInfo on the effect owner.
+    //   2. Bake sprites with Tools/Effect Animation Baker → EffectAnimConf.xml.
+    //   3. Call EffectCtrl.Instance.BindEffectAnimWithEntity once per type.
+    //   4. Spawn / move / release via EffectCtrl.Instance.AddEffectAt / ReleaseEffect.
+    [System.Obsolete("Prefab-based EffectBase is superseded by the ECS EffectAnim system. " +
+                     "Implement IEffectAnimInfo and use EffectCtrl.AddEffectAt instead.")]
     public class EffectBase : MonoBehaviour
     {
 #region public parameters

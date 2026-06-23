@@ -4,7 +4,11 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Xml;
 using UnityEditor;
+using UnityEditor.AddressableAssets;
+using UnityEditor.AddressableAssets.Settings;
+using UnityEditor.AddressableAssets.Settings.GroupSchemas;
 using UnityEngine;
 using WarField.Anim;
 
@@ -18,21 +22,47 @@ public class NaturalStringComparer : IComparer<string>
     public int Compare(string x, string y) => StrCmpLogicalW(x, y);
 }
 
-// 万能解耦帧动画烘焙机. 接管原版 Frame2TextureArray 的 HD/MD/LD BC7 渲染管线与八角 Mesh 生成,
-// 但业务层从 Soldier 升级到通用 Element, 烘焙写入 GlobalAnimConfig.
+// 万能解耦帧动画烘焙机. 接管原版 Frame2TextureArray 的 HD/MD/LD BC7 渲染管线与八角 Mesh 生成.
+// 烘焙产物（Texture2DArray / OctagonMesh.asset）写入源目录。状态数据全量写入 CharacterAnimConf.xml。
 public class Frame2TextureArray : EditorWindow
 {
-    private const string GLOBAL_CONFIG_FOLDER = "Assets/Animation";
-    private const string GLOBAL_CONFIG_PATH = GLOBAL_CONFIG_FOLDER + "/GlobalAnimConfig.asset";
+    // CharacterAnimConf.xml 的完整 Assets 路径（位于 Resources 下，运行时可用 Resources.Load 读取）
+    private const string ANIM_CONF_XML_PATH = "Assets/Resources/Conf/CharacterAnimConf.xml";
 
     // ============== UI 状态 ==============
-    private GlobalAnimConfig p_globalConfig;
     private DefaultAsset targetElementFolder;
 
     // Alpha Bleed (颜色外扩) 宽度: HD (512²) 档位下把身体最近邻 RGB 向透明区外扩多少像素.
     // MD/LD 自动按分辨率比例缩减. 设为 0 关闭外扩, 回退到 alpha=0 → RGB 洗黑的旧行为
     // (会带回 cutout 暗边问题, 仅作 debug 对照). 推荐 HD 8 px 起步.
     private int _bleedPixelsHD = 8;
+
+    // 八角 Mesh 切角比例：对 alpha 包围盒的宽/高各切去四角的百分比（0 = 不切角，即退化为矩形）。
+    //
+    // 【作用】角色贴图四角通常是纯透明区域，用矩形 Quad 会让 GPU 白跑这些片元的
+    //         纹理采样 + 光照计算（只在 clip 时才丢弃）。切掉四角可减少约 20%~35% Overdraw，
+    //         上千个单位同屏时收益显著。
+    //
+    // 【风险】切角是在"全帧、全方向 alpha 包围盒"的基础上再裁剪四角。
+    //         若某帧某方向的武器/肢体像素恰好落在对角线位置（例如斜向大幅挥刀），
+    //         该像素的 UV 可能同时接近 maxX 和 maxY，会被几何硬切而不是 clip 丢弃，
+    //         表现为那一块身体像素直接消失（不是噪点，是一块面缺失）。
+    //
+    // 【调整建议】
+    //   - 默认 0.10（10%）是保守值，绝大多数人形角色不会触发切角问题。
+    //   - 如需更激进地削减 Overdraw，可逐步调大到 0.15（15%），但必须在编辑器里
+    //     将八角 Mesh 赋给 Prefab，播放所有动画帧目视验证四角无身体像素被裁。
+    //   - 如果某个动作（攻击/技能）有斜向大幅外伸的武器，建议设为 0.05 或直接 0。
+    //   - 设为 0 时八角 Mesh 退化为与包围盒等大的矩形，完全无切角风险，
+    //     但相对于完整 Quad 仍然有收益（包围盒已比 0~1 Quad 小很多）。
+    private float _cornerCutRatio = 0.15f;
+
+    // description 字段：美术/策划对此动画元素的备注说明，写入 CharacterAnimConf.xml。
+    // 运行时不解析，仅供人工阅读和版本审查使用。
+    private string _description = "";
+
+    // 用于检测 targetElementFolder 变化后自动从 XML 回填 description
+    private string _lastFolderPath = "";
 
     // 烘焙输出子目录名 (放在元素根目录下), 扫描时必须显式跳过这个名字防止把自己当成 state
     private const string BAKED_OUTPUT_SUBFOLDER = "BakedArrays";
@@ -77,20 +107,19 @@ public class Frame2TextureArray : EditorWindow
         GUILayout.Label("Animation Baker", EditorStyles.boldLabel);
         GUILayout.Space(10);
 
-        p_globalConfig = AssetDatabase.LoadAssetAtPath<GlobalAnimConfig>(GLOBAL_CONFIG_PATH);
-        EditorGUI.BeginDisabledGroup(true);
-        EditorGUILayout.TextField("GlobalAnimConfig", GLOBAL_CONFIG_PATH);
-        EditorGUI.EndDisabledGroup();
-
+        // ---- 元素源目录 ----
         EditorGUILayout.BeginHorizontal();
         targetElementFolder = (DefaultAsset)EditorGUILayout.ObjectField(
-            "待烘焙元素根目录:", targetElementFolder, typeof(DefaultAsset), false);
+            new GUIContent("待烘焙元素根目录",
+                "选择包含动画帧 PNG 的元素根目录（如 Assets/Animation/Soldiers/Human/Melee/Infantry）。\n" +
+                "烘焙产物（Texture2DArray / OctagonMesh / AnimData.json）将写入 Assets/Resources/ 下的同名路径。"),
+            targetElementFolder, typeof(DefaultAsset), false);
         if (GUILayout.Button("浏览...", GUILayout.Width(60)))
         {
             string defaultPath = targetElementFolder != null
                 ? AssetDatabase.GetAssetPath(targetElementFolder)
                 : "Assets";
-            string absolutePath = EditorUtility.OpenFolderPanel("弹出对话框：选择元素根目录", defaultPath, "");
+            string absolutePath = EditorUtility.OpenFolderPanel("选择元素根目录", defaultPath, "");
             if (!string.IsNullOrEmpty(absolutePath))
             {
                 if (absolutePath.StartsWith(Application.dataPath))
@@ -104,8 +133,25 @@ public class Frame2TextureArray : EditorWindow
                 }
             }
         }
-
         EditorGUILayout.EndHorizontal();
+
+        // ---- 当 folder 变化时从 XML 回填 description ----
+        string curFolderPath = targetElementFolder != null ? AssetDatabase.GetAssetPath(targetElementFolder) : "";
+        if (curFolderPath != _lastFolderPath)
+        {
+            _lastFolderPath = curFolderPath;
+            if (!string.IsNullOrEmpty(curFolderPath))
+                _description = TryGetExistingDescription(Path.GetFileName(curFolderPath));
+        }
+
+        // ---- description（不参与运行时解析，仅写入 XML 供人工阅读）----
+        GUILayout.Space(6);
+        _description = EditorGUILayout.TextField(
+            new GUIContent("描述 (description)",
+                "对该动画元素的备注说明，写入 CharacterAnimConf.xml 的 <description> 节点。\n" +
+                "运行时不解析，仅供美术/策划在版本审查时阅读。\n" +
+                "切换元素目录时会自动回填 XML 中已有的描述内容。"),
+            _description);
 
         GUILayout.Space(10);
         _bleedPixelsHD = EditorGUILayout.IntSlider(
@@ -118,20 +164,45 @@ public class Frame2TextureArray : EditorWindow
                 "MD/LD 按照一半的一半规则自动向上取整缩减外扩像素数."),
             _bleedPixelsHD, 0, 32);
 
+        GUILayout.Space(6);
+        _cornerCutRatio = EditorGUILayout.Slider(
+            new GUIContent(
+                "八角切角比例",
+                "生成八角 Mesh 时，对 alpha 包围盒的宽/高各切去四角的百分比。\n\n" +
+                "【作用】\n" +
+                "角色贴图四角通常是纯透明区域，用矩形 Quad 会让 GPU 对这些片元\n" +
+                "跑完完整的纹理采样和光照计算后才在 clip 处丢弃（Overdraw）。\n" +
+                "切掉四角可减少约 20%~35% 的 Overdraw，上千单位同屏时收益显著。\n\n" +
+                "【风险】\n" +
+                "切角基于全帧、全方向 alpha 包围盒，若某帧某方向的武器/肢体像素\n" +
+                "同时接近包围盒的 maxX 和 maxY（如斜向大幅挥刀），会被几何硬切：\n" +
+                "不是噪点，而是那块身体面直接消失。\n\n" +
+                "【推荐值】\n" +
+                "• 0.10（默认）：保守值，绝大多数人形角色安全。\n" +
+                "• 0.15：需目视验证所有攻击/技能帧四角无身体像素被裁。\n" +
+                "• 0.05 或 0：有斜向大外伸武器时使用；0 退化为矩形包围盒，无切角风险。\n\n" +
+                "修改后点 Generate 重新烘焙，新 Mesh 自动保存到元素的 Resources 目录。"),
+            _cornerCutRatio, 0f, 0.25f);
+
         GUILayout.Space(10);
 
         bool canBake = targetElementFolder != null;
         if (!canBake)
         {
-            EditorGUILayout.HelpBox("请先指派元素根目录。GlobalAnimConfig 会在烘焙时自动创建或更新。", MessageType.Warning);
+            EditorGUILayout.HelpBox(
+                "请先指定元素根目录。\n" +
+                "烘焙产物（Texture2DArray / OctagonMesh）写入源目录；状态数据全量写入 CharacterAnimConf.xml。",
+                MessageType.Warning);
         }
         else
         {
-            string elemPath = AssetDatabase.GetAssetPath(targetElementFolder);
-            string configStatus = p_globalConfig == null ? "烘焙时自动创建" : "烘焙时更新现有配置";
-            EditorGUILayout.HelpBox($"GlobalAnimConfig: {GLOBAL_CONFIG_PATH} ({configStatus})\n" +
-                                    $"目标元素路径: {elemPath}\n" +
-                                    $"元素名 (烘焙后用于 GlobalAnimConfig.GetElementData 寻址): {Path.GetFileName(elemPath)}",
+            string elemPath  = AssetDatabase.GetAssetPath(targetElementFolder);
+            string xmlPath   = DeriveXmlPath(elemPath);
+            EditorGUILayout.HelpBox(
+                $"配置文件: {ANIM_CONF_XML_PATH}\n" +
+                $"源目录 / 输出目录: {elemPath}\n" +
+                $"XML path 字段: {xmlPath}\n" +
+                $"元素名（XML key）: {Path.GetFileName(elemPath)}",
                 MessageType.None);
         }
 
@@ -145,45 +216,18 @@ public class Frame2TextureArray : EditorWindow
         GUI.enabled = true;
     }
 
-    private static GlobalAnimConfig GetOrCreateGlobalConfig()
-    {
-        GlobalAnimConfig config = AssetDatabase.LoadAssetAtPath<GlobalAnimConfig>(GLOBAL_CONFIG_PATH);
-        if (config != null)
-            return config;
-
-        UnityEngine.Object brokenAsset = AssetDatabase.LoadMainAssetAtPath(GLOBAL_CONFIG_PATH);
-        if (brokenAsset != null)
-        {
-            Debug.LogWarning($"[Frame2TextureArray] {GLOBAL_CONFIG_PATH} is not a valid GlobalAnimConfig asset. Recreating it.");
-            AssetDatabase.DeleteAsset(GLOBAL_CONFIG_PATH);
-        }
-
-        if (!AssetDatabase.IsValidFolder(GLOBAL_CONFIG_FOLDER))
-        {
-            AssetDatabase.CreateFolder("Assets", "Animation");
-        }
-
-        config = CreateInstance<GlobalAnimConfig>();
-        AssetDatabase.CreateAsset(config, GLOBAL_CONFIG_PATH);
-        AssetDatabase.SaveAssets();
-        AssetDatabase.ImportAsset(GLOBAL_CONFIG_PATH, ImportAssetOptions.ForceUpdate);
-        return AssetDatabase.LoadAssetAtPath<GlobalAnimConfig>(GLOBAL_CONFIG_PATH);
-    }
-
     // =========================================================
     //                    核心烘焙主管线
     // =========================================================
     private void ExecuteBakePipeline()
     {
-        p_globalConfig = GetOrCreateGlobalConfig();
-        if (p_globalConfig == null)
-        {
-            EditorUtility.DisplayDialog("错误", $"无法创建或读取 {GLOBAL_CONFIG_PATH}", "确定");
-            return;
-        }
-
-        string rootPath = AssetDatabase.GetAssetPath(targetElementFolder);
+        string rootPath    = AssetDatabase.GetAssetPath(targetElementFolder);
         string elementName = Path.GetFileName(rootPath);
+
+        // 烘焙产物直接输出到源目录（与拖入的文件夹相同）。
+        // XML <path> = 源目录去掉 "Assets/" 前缀，AnimCtrl 在编辑器运行时用 AssetDatabase 重建完整路径。
+        string xmlPath    = DeriveXmlPath(rootPath);
+        string bakedFolder = rootPath;
 
         // ---- 1. 树形目录扫描 (变种 + 方向 + 帧) ----
         List<TempStateData> scannedData = ScanElementAnimationFolder(rootPath);
@@ -223,16 +267,13 @@ public class Frame2TextureArray : EditorWindow
             return;
         }
 
-        // ---- 3. 回溯老配置 (按 elementName 命中, 不再依赖任何业务侧 ID) ----
-        ElementAnimBakedData oldElementData = p_globalConfig.GetElementData(elementName);
+        // ---- 3. 回溯老配置（从 CharacterAnimConf.xml 已有条目读取，用于继承 isLoop/eventFrame/frameRate）----
+        ElementAnimBakedData oldElementData = LoadOldElementDataFromXml(elementName);
 
         ElementAnimBakedData newBakedData = new ElementAnimBakedData
         {
             p_elementName = elementName
         };
-
-        // ---- 4. 创建烘焙输出子目录 (扫描阶段已主动跳过同名目录) ----
-        string bakedFolder = rootPath;
 
         // ---- 5. 八角 Mesh 用的全局 alpha 包围盒, 只在 HD 烘焙阶段内联收集一次 ----
         //   八角 Mesh UV 必须包住"alpha 掩膜 + bleed 外扩环"两部分,
@@ -374,6 +415,10 @@ public class Frame2TextureArray : EditorWindow
             SaveAssetPreservingMeta(colorTexArray, colorAssetPath);
             SaveAssetPreservingMeta(normalTexArray, normalAssetPath);
 
+            // 注册 Addressable 地址，供运行时通过 Addressables.LoadAssetAsync 加载
+            RegisterAsAddressable(colorAssetPath,  $"{xmlPath}/{elementName}_{currentLayer}_Color");
+            RegisterAsAddressable(normalAssetPath, $"{xmlPath}/{elementName}_{currentLayer}_Normal");
+
             persistentColorArrays[i] = AssetDatabase.LoadAssetAtPath<Texture2DArray>(colorAssetPath);
             persistentNormalArrays[i] = AssetDatabase.LoadAssetAtPath<Texture2DArray>(normalAssetPath);
         }
@@ -396,8 +441,11 @@ public class Frame2TextureArray : EditorWindow
 
         float w = globalMaxX - globalMinX;
         float h = globalMaxY - globalMinY;
-        float cutU = w * 0.15f; // 切除四个顶角各 15% 的透明浪费区, 削减 Overdraw
-        float cutV = h * 0.15f;
+        // 切角量由面板 "八角切角比例" (_cornerCutRatio) 控制，默认 0.10（10%）。
+        // 设为 0 时退化为矩形包围盒，无切角风险；设为 0.15 时可多减约 10% Overdraw，
+        // 但需目视验证攻击/技能帧的斜向外伸像素不会被几何裁掉。详见面板 Tooltip。
+        float cutU = w * _cornerCutRatio;
+        float cutV = h * _cornerCutRatio;
 
         Vector2[] uvs = new Vector2[8];
         uvs[0] = new Vector2(globalMinX + cutU, globalMaxY); // 顶左
@@ -443,15 +491,11 @@ public class Frame2TextureArray : EditorWindow
         octagonMesh.normals = normals;
         octagonMesh.RecalculateTangents();
 
-        // 安全清理残留旧子资产 mesh (挂在 GlobalAnimConfig 上的 subasset)
-        if (oldElementData != null && oldElementData.p_bakedMesh != null)
-        {
-            AssetDatabase.RemoveObjectFromAsset(oldElementData.p_bakedMesh);
-            DestroyImmediate(oldElementData.p_bakedMesh, true);
-        }
-
-        newBakedData.p_bakedMesh = octagonMesh;
-        AssetDatabase.AddObjectToAsset(octagonMesh, p_globalConfig);
+        // 将八角 Mesh 保存为独立 .asset 文件（与 Texture2DArray 同目录，保留 GUID）
+        string meshAssetPath = $"{bakedFolder}/{elementName}_OctagonMesh.asset";
+        SaveAssetPreservingMeta(octagonMesh, meshAssetPath);
+        RegisterAsAddressable(meshAssetPath, $"{xmlPath}/{elementName}_OctagonMesh", "AnimationMeshs");
+        newBakedData.p_bakedMesh = AssetDatabase.LoadAssetAtPath<Mesh>(meshAssetPath);
 
         // ---- 8. 按扫描顺序回填 state/var/dir clip 偏移 ----
         // 结构说明 (与 AnimDefines.cs 同步):
@@ -541,18 +585,15 @@ public class Frame2TextureArray : EditorWindow
             newBakedData.p_stateAnim.Add(stateConfig);
         }
 
-        // ---- 9. 替换列表中老条目, 落盘 ----
-        if (oldElementData != null)
-            p_globalConfig.p_allElementsBakedList.Remove(oldElementData);
-        p_globalConfig.p_allElementsBakedList.Add(newBakedData);
-
-        EditorUtility.SetDirty(p_globalConfig);
-        AssetDatabase.SaveAssets();
+        // ---- 9. 全量写入 CharacterAnimConf.xml（增量：首次追加，重复运行更新 path + states）----
+        UpdateCharacterAnimConf(elementName, xmlPath, _description, newBakedData.p_stateAnim);
 
         // ---- 10. 输出日志 ----
         StringBuilder sb = new StringBuilder();
         sb.AppendLine($"<b><color=green>BC7 高压三档阵列打包成功！</color></b>");
         sb.AppendLine($"元素名称 (寻址 key): <color=yellow>{elementName}</color>");
+        sb.AppendLine($"源目录 / 输出目录: <color=white>{bakedFolder}</color>");
+        sb.AppendLine($"XML path 字段: <color=white>{xmlPath}</color>");
         sb.AppendLine($"<b>单 Block 总切片数: <color=cyan>{singleBlockTotalFrames}</color></b>");
         int sliceCursor = 0;
         foreach (var st in scannedData)
@@ -571,8 +612,290 @@ public class Frame2TextureArray : EditorWindow
 
         EditorUtility.DisplayDialog("成功",
             $"[{elementName}] 的 HD/MD/LD 三档 BC7 阵列 + 八角 Mesh 已成功输出！\n" +
+            $"输出目录: {bakedFolder}\n" +
             $"切片总量: {singleBlockTotalFrames}\np_eventFrame 已自动继承.",
             "OK");
+    }
+
+    // =========================================================
+    //         XML / 路径辅助方法
+    // =========================================================
+
+    // =========================================================
+    //         Addressables 注册
+    // =========================================================
+
+    // 将 assetPath 对应的资产注册（或更新）到指定 Addressables 组，并设置地址为 address。
+    // groupName 默认为 "AnimationTextures"（贴图），Mesh 传入 "AnimationMeshs"。
+    // AnimCtrl 运行时用相同的 address 字符串通过 Addressables.LoadAssetAsync 加载。
+    private static void RegisterAsAddressable(string assetPath, string address,
+                                              string groupName = "AnimationTextures")
+    {
+        AddressableAssetSettings aaSettings = AddressableAssetSettingsDefaultObject.Settings;
+        if (aaSettings == null)
+        {
+            Debug.LogWarning("[Animation Baker] 未找到 Addressable Settings。" +
+                             "请先打开 Window > Asset Management > Addressables > Groups 初始化。");
+            return;
+        }
+
+        // 找到或创建指定组
+        AddressableAssetGroup group = aaSettings.FindGroup(groupName);
+        if (group == null)
+        {
+            group = aaSettings.CreateGroup(groupName, false, false, false,
+                new List<AddressableAssetGroupSchema>
+                {
+                    ScriptableObject.CreateInstance<BundledAssetGroupSchema>(),
+                    ScriptableObject.CreateInstance<ContentUpdateGroupSchema>()
+                });
+        }
+
+        string guid = AssetDatabase.AssetPathToGUID(assetPath);
+        if (string.IsNullOrEmpty(guid))
+        {
+            Debug.LogWarning($"[Animation Baker] 无法注册 Addressable：{assetPath} 的 GUID 为空，请先 AssetDatabase.Refresh()。");
+            return;
+        }
+
+        AddressableAssetEntry entry = aaSettings.CreateOrMoveEntry(guid, group, false, false);
+        entry.address = address;
+        aaSettings.SetDirty(AddressableAssetSettings.ModificationEvent.EntryModified, entry, true);
+    }
+
+    // 把 Assets-relative 路径规范化为去掉"Assets/"前缀的路径，用作 XML <path> 字段。
+    // AnimCtrl 在编辑器运行时用 "Assets/" + path 重建 AssetDatabase 完整路径。
+    private static string DeriveXmlPath(string folderPath)
+    {
+        const string assetsPrefix = "Assets/";
+        return folderPath.StartsWith(assetsPrefix, StringComparison.OrdinalIgnoreCase)
+            ? folderPath.Substring(assetsPrefix.Length)
+            : folderPath;
+    }
+
+    // 确保 assetPath（Assets 相对）对应的目录在磁盘存在
+    private static void EnsureUnityDirectory(string assetPath)
+    {
+        string absPath = Path.GetFullPath(
+            assetPath.Replace("Assets", Application.dataPath.TrimEnd('/')));
+        if (!Directory.Exists(absPath))
+        {
+            Directory.CreateDirectory(absPath);
+            AssetDatabase.Refresh();
+        }
+    }
+
+    // 从 CharacterAnimConf.xml 读取指定元素的旧状态数据，用于继承 isLoop/eventFrame/frameRate。
+    private static ElementAnimBakedData LoadOldElementDataFromXml(string elementName)
+    {
+        string absXmlPath = Path.GetFullPath(
+            ANIM_CONF_XML_PATH.Replace("Assets", Application.dataPath.TrimEnd('/')));
+        if (!File.Exists(absXmlPath)) return null;
+
+        XmlDocument doc = new XmlDocument();
+        doc.Load(absXmlPath);
+
+        XmlNodeList nodes = doc.SelectNodes("characterAnimCfgs/anim");
+        if (nodes == null) return null;
+
+        foreach (XmlNode node in nodes)
+        {
+            if (node.NodeType != XmlNodeType.Element) continue;
+            string name = node.SelectSingleNode("name")?.InnerText?.Trim();
+            if (name != elementName) continue;
+
+            return new ElementAnimBakedData
+            {
+                p_elementName = elementName,
+                p_stateAnim   = ParseStatesFromXmlNode(node.SelectSingleNode("states"))
+            };
+        }
+        return null;
+    }
+
+    // 在 CharacterAnimConf.xml 中增量写入或更新一条 <anim> 记录（含完整状态数据）。
+    // 若 <name> 已存在：更新 <path> 和 <states>；<description> 仅在用户填了内容时覆盖。
+    // 若 <name> 不存在：追加新节点。
+    private static void UpdateCharacterAnimConf(
+        string elementName, string xmlPath, string description, List<StateAnimData> stateAnim)
+    {
+        string absXmlPath = Path.GetFullPath(
+            ANIM_CONF_XML_PATH.Replace("Assets", Application.dataPath.TrimEnd('/')));
+
+        XmlDocument doc = new XmlDocument();
+        if (File.Exists(absXmlPath))
+        {
+            doc.Load(absXmlPath);
+        }
+        else
+        {
+            EnsureUnityDirectory(System.IO.Path.GetDirectoryName(ANIM_CONF_XML_PATH));
+            doc.AppendChild(doc.CreateXmlDeclaration("1.0", "utf-8", null));
+            doc.AppendChild(doc.CreateElement("characterAnimCfgs"));
+        }
+
+        XmlElement root = doc.DocumentElement;
+        if (root == null)
+        {
+            Debug.LogError($"[Animation Baker] {ANIM_CONF_XML_PATH} 结构异常，根节点缺失。");
+            return;
+        }
+
+        XmlElement existingAnim = null;
+        foreach (XmlNode node in root.ChildNodes)
+        {
+            if (node.NodeType != XmlNodeType.Element) continue;
+            if (node.SelectSingleNode("name")?.InnerText?.Trim() == elementName)
+            {
+                existingAnim = (XmlElement)node;
+                break;
+            }
+        }
+
+        if (existingAnim != null)
+        {
+            // 更新 <path>
+            XmlNode pathNode = existingAnim.SelectSingleNode("path");
+            if (pathNode != null) pathNode.InnerText = xmlPath;
+            else
+            {
+                var pe = doc.CreateElement("path"); pe.InnerText = xmlPath;
+                existingAnim.AppendChild(pe);
+            }
+
+            // 更新 <description>（仅在用户输入了内容时覆盖，否则保留原值）
+            if (!string.IsNullOrEmpty(description))
+            {
+                XmlNode descNode = existingAnim.SelectSingleNode("description");
+                if (descNode != null) descNode.InnerText = description;
+                else
+                {
+                    var de = doc.CreateElement("description"); de.InnerText = description;
+                    existingAnim.InsertBefore(de, existingAnim.FirstChild);
+                }
+            }
+
+            // 全量替换 <states>
+            XmlNode oldStates = existingAnim.SelectSingleNode("states");
+            if (oldStates != null) existingAnim.RemoveChild(oldStates);
+            existingAnim.AppendChild(BuildStatesXml(doc, stateAnim));
+        }
+        else
+        {
+            // 追加新 <anim> 节点
+            XmlElement animElem = doc.CreateElement("anim");
+
+            var de = doc.CreateElement("description"); de.InnerText = description ?? "";
+            animElem.AppendChild(de);
+            var ne = doc.CreateElement("name"); ne.InnerText = elementName;
+            animElem.AppendChild(ne);
+            var pe = doc.CreateElement("path"); pe.InnerText = xmlPath;
+            animElem.AppendChild(pe);
+            animElem.AppendChild(BuildStatesXml(doc, stateAnim));
+
+            root.AppendChild(animElem);
+        }
+
+        var settings = new XmlWriterSettings { Indent = true, IndentChars = "    ", Encoding = Encoding.UTF8 };
+        using (XmlWriter writer = XmlWriter.Create(absXmlPath, settings))
+            doc.Save(writer);
+
+        AssetDatabase.ImportAsset(ANIM_CONF_XML_PATH, ImportAssetOptions.ForceUpdate);
+        Debug.Log($"[Animation Baker] CharacterAnimConf.xml 已更新：{elementName} → {xmlPath}（{stateAnim?.Count ?? 0} states）");
+    }
+
+    // 将 List<StateAnimData> 序列化为 <states>/<state>/<variation> XML 节点树
+    private static XmlElement BuildStatesXml(XmlDocument doc, List<StateAnimData> stateAnim)
+    {
+        XmlElement statesElem = doc.CreateElement("states");
+        if (stateAnim == null) return statesElem;
+
+        foreach (var state in stateAnim)
+        {
+            XmlElement stateElem = doc.CreateElement("state");
+            stateElem.SetAttribute("name",   state.p_stateName ?? "");
+            stateElem.SetAttribute("isLoop", state.p_isLoop ? "true" : "false");
+
+            for (int vi = 0; vi < state.p_variations.Count; vi++)
+            {
+                var v = state.p_variations[vi];
+                XmlElement varElem = doc.CreateElement("variation");
+                varElem.SetAttribute("index",      vi.ToString());
+                varElem.SetAttribute("frameCount", v.p_animFrameCount.ToString());
+                varElem.SetAttribute("frameRate",
+                    v.p_frameRate.ToString("G", System.Globalization.CultureInfo.InvariantCulture));
+                varElem.SetAttribute("eventFrame", v.p_eventFrame.ToString());
+                varElem.SetAttribute("offsets",    string.Join(",", v.p_animStartOffset));
+                stateElem.AppendChild(varElem);
+            }
+
+            statesElem.AppendChild(stateElem);
+        }
+        return statesElem;
+    }
+
+    // 将 <states> XML 节点树解析为 List<StateAnimData>（与 AnimCtrl.ParseStatesFromXml 逻辑一致）
+    private static List<StateAnimData> ParseStatesFromXmlNode(XmlNode statesNode)
+    {
+        var result = new List<StateAnimData>();
+        if (statesNode == null) return result;
+
+        foreach (XmlNode stateNode in statesNode.ChildNodes)
+        {
+            if (stateNode.NodeType != XmlNodeType.Element) continue;
+
+            string stateName = stateNode.Attributes?["name"]?.Value ?? "";
+            bool   isLoop    = string.Equals(stateNode.Attributes?["isLoop"]?.Value, "true",
+                                   StringComparison.OrdinalIgnoreCase);
+            var stateData = new StateAnimData { p_stateName = stateName, p_isLoop = isLoop };
+
+            foreach (XmlNode varNode in stateNode.ChildNodes)
+            {
+                if (varNode.NodeType != XmlNodeType.Element) continue;
+
+                int.TryParse(varNode.Attributes?["frameCount"]?.Value, out int fc);
+                float.TryParse(varNode.Attributes?["frameRate"]?.Value,
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out float fr);
+                if (fr == 0f) fr = 1f;
+                int.TryParse(varNode.Attributes?["eventFrame"]?.Value, out int ef);
+                if (!int.TryParse(varNode.Attributes?["eventFrame"]?.Value, out _)) ef = -1;
+
+                string offsetsStr = varNode.Attributes?["offsets"]?.Value ?? "";
+                var varData = new VariationAnimData
+                    { p_animFrameCount = fc, p_frameRate = fr, p_eventFrame = ef };
+
+                foreach (string part in offsetsStr.Split(','))
+                    if (int.TryParse(part.Trim(), out int off))
+                        varData.p_animStartOffset.Add(off);
+
+                stateData.p_variations.Add(varData);
+            }
+            result.Add(stateData);
+        }
+        return result;
+    }
+
+    // 从 XML 读取某元素已有的 description（切换目录时回填 UI 输入框用）
+    private static string TryGetExistingDescription(string elementName)
+    {
+        string absXmlPath = Path.GetFullPath(
+            ANIM_CONF_XML_PATH.Replace("Assets", Application.dataPath.TrimEnd('/')));
+        if (!File.Exists(absXmlPath)) return "";
+
+        XmlDocument doc = new XmlDocument();
+        doc.Load(absXmlPath);
+
+        XmlNodeList animNodes = doc.SelectNodes("characterAnimCfgs/anim");
+        if (animNodes == null) return "";
+
+        foreach (XmlNode node in animNodes)
+        {
+            if (node.NodeType != XmlNodeType.Element) continue;
+            if (node.SelectSingleNode("name")?.InnerText?.Trim() != elementName) continue;
+            return node.SelectSingleNode("description")?.InnerText?.Trim() ?? "";
+        }
+        return "";
     }
 
     // =========================================================
@@ -809,23 +1132,22 @@ public class Frame2TextureArray : EditorWindow
     // 强制保护原有 .meta 文件
     private static void SaveAssetPreservingMeta(UnityEngine.Object asset, string assetPath)
     {
-        // 定义一个安全的临时中转路径
+        // 注意：不在 CreateAsset 之前设置 asset.name——Unity 的 CreateAsset 会把对象名
+        //       强制覆写为临时文件名（"temp_array_bake"），提前设置无效。
+        //       正确做法：在文件落到最终路径后再 Load 回来改名（见步骤 4）。
         string tempPath = "Assets/temp_array_bake.asset";
 
         // 1. 先将新生成的贴图阵列资产创建到临时的隐藏路径
         AssetDatabase.CreateAsset(asset, tempPath);
-        AssetDatabase.SaveAssets(); // 确保强推内存数据落地到磁盘物理文件
+        AssetDatabase.SaveAssets();
 
-        // 2. 判断目标路径是否已经存在老资产 (说明是覆盖式重新生成)
+        // 2. 判断目标路径是否已经存在老资产（覆盖式重新生成）
         if (File.Exists(assetPath))
         {
             try
             {
-                // 【核心外挂操作】仅仅复制二进制实体数据文件 (.asset), 绝对不碰、不删除原有的 .meta 文件！
-                // 这样原有的老 GUID 在磁盘和材质球的引用中都会完好无损地保留下来
+                // 【核心外挂操作】仅复制二进制数据文件，不碰 .meta，保留原有 GUID
                 File.Copy(tempPath, assetPath, true);
-
-                // 3. 强行通知 Unity 重新导入目标路径, 让它基于旧的 GUID 去读取刚刚被偷梁换柱的二进制新资产
                 AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate);
             }
             catch (System.Exception e)
@@ -833,13 +1155,22 @@ public class Frame2TextureArray : EditorWindow
                 Debug.LogError($"[分身替换失败] 覆盖物理文件时发生错误: {e.Message}");
             }
 
-            // 4. 功成身退, 卸磨杀驴. 安全擦除临时资产及配套生成的临时 meta
             AssetDatabase.DeleteAsset(tempPath);
         }
         else
         {
-            // 如果目标路径本来就是空的 (比如新加的元素), 直接通过 Unity 正常移动过去
             AssetDatabase.MoveAsset(tempPath, assetPath);
+        }
+
+        // 3. 修正内部对象名：CreateAsset 将名字锁定为 "temp_array_bake"，
+        //    在资产落到目标路径后 Load 回来改名，让内部名称与文件名一致。
+        string targetName = Path.GetFileNameWithoutExtension(assetPath);
+        var saved = AssetDatabase.LoadMainAssetAtPath(assetPath);
+        if (saved != null && saved.name != targetName)
+        {
+            saved.name = targetName;
+            EditorUtility.SetDirty(saved);
+            AssetDatabase.SaveAssets();
         }
     }
 

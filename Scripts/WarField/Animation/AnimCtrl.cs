@@ -1,16 +1,20 @@
 using System;
 using System.Collections.Generic;
+using System.Xml;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.AddressableAssets;
 using UnityEngine.Jobs;
+using UnityEngine.ResourceManagement.AsyncOperations;
 
 using WarField.Anim;
 namespace WarField
 {
     using WE = WarFieldElements;
+    using GD = GlobalDefines;
 
     public class AnimCtrl : MonoBehaviour
     {
@@ -20,11 +24,20 @@ namespace WarField
 
 #region private parameters
 
-        [SerializeField] private GlobalAnimConfig _animConfig;
         [SerializeField] private float _animFPS = 12; //全局FPS(不影响特效特效的帧率)
-        private Dictionary<uint, BlobAssetReference<BlobAnimData>> _animBlobs;
+
+        // 运行时动画数据字典：由 LoadCharacterAnimConf() 在 Awake 阶段从
+        // Resources/Conf/CharacterAnimConf.xml 读取，再通过 Addressables 加载贴图填充。
+        // key = elementName（与 prefab 名一致，用于 BindAnimWithEntity 查找）
+        private Dictionary<string, ElementAnimBakedData> _elementDataDict;
+
+        // Addressables 加载句柄列表，在 OnDestroy 时统一释放以避免内存泄漏
+        private readonly List<AsyncOperationHandle> _addressableHandles = new List<AsyncOperationHandle>();
 
         // ECS
+        private Dictionary<uint, BlobAssetReference<BlobAnimData>> _animBlobs;  //<eleAnimId BlobAnimData>, 记录了每个state和每个动画变种的动画细节
+
+        // <eleAnimId ElementAnimBakedData> 用来切换分辨率, 在readconf的时候生成_elementDataDict, 在读取prefab的时候再将eleAnimId以及stateId与ElementAnimBakedData绑定生成_bakedDataDict
         private Dictionary<uint, ElementAnimBakedData> _bakedDataDict;
         private static EntityManager _entityManager;
         private static EntityArchetype _animArchetype;
@@ -35,7 +48,7 @@ namespace WarField
         // 持久化同步命令缓冲区（替代 TempJob，修复瓶颈5）
         private NativeArray<AnimSyncCommand> _cmdBuffer;
 
-        // --- 渲染快照 NativeArray（修复瓶颈1：消除 GetComponentData 随机访问）---
+        // 渲染快照 NativeArray
         // 由 AnimRenderExportSystem 每帧写入，AnimCtrl.LateUpdate 按"稳定 slot"读取
         // slot 同时是 _allProxies / _proxyLocalMatrices / _worldMatrixCache 的下标
         private NativeArray<AnimRenderSnapshot> _renderSnapshots;
@@ -48,7 +61,7 @@ namespace WarField
         private const int kMatrixCapacity = 16384;
         private JobHandle _matrixJobHandle;
 
-        // --- 待发送给 GPU 的批次数组（每批最多 1023 个，DrawMeshInstanced 硬限制）---
+        // 待发送给 GPU 的批次数组（每批最多 1023 个，DrawMeshInstanced 硬限制）
         private Matrix4x4[] _matrixBatch;
         private float[]     _sliceBatch;
         private float[]     _alphaBatch;
@@ -56,7 +69,7 @@ namespace WarField
         private int _slicePropId;
         private int _alphaPropId;
 
-        // --- 渲染分组 ---
+        // 渲染分组
         private class RenderGroup
         {
             public uint             p_eleAnimId;
@@ -116,9 +129,9 @@ namespace WarField
             _activeGroups  = new List<RenderGroup>();
             _pendingEvents = new List<PendingAnimEvent>(2048);
 
-            _matrixBatch = new Matrix4x4[1023];
-            _sliceBatch  = new float[1023];
-            _alphaBatch  = new float[1023];
+            _matrixBatch = new Matrix4x4[GD.MaxGPUInstances];
+            _sliceBatch  = new float[GD.MaxGPUInstances];
+            _alphaBatch  = new float[GD.MaxGPUInstances];
             _mpb         = new MaterialPropertyBlock();
             _slicePropId = Shader.PropertyToID("_FinalSliceIndex");
             _alphaPropId = Shader.PropertyToID("_Alpha");
@@ -127,12 +140,7 @@ namespace WarField
             // SoldierCtrl.Awake -> LoadSoldierPrefab -> AnimCtrl.BindAnimWithEntity 同样在 Awake 阶段触发，
             // 如果留到 WarFieldGameManager 协程里再 init，BindAnimWithEntity 会因 _beInited==false 静默 return false，
             // 之后 CreateAnimEntity 拿不到 blob -> Entity.Null -> 渲染循环全部跳过 -> 完全看不到士兵。
-            if (_animConfig == null)
-            {
-                GameLogger.LogError("AnimCtrl: _animConfig is null");
-                _beInited = false;
-                return;
-            }
+            LoadCharacterAnimConf();
             _beInited = true;
         }
 
@@ -164,7 +172,7 @@ namespace WarField
             AnimRenderExportSystem.CompleteExport();
             _matrixJobHandle.Complete();
 
-            NativeArray<AnimRenderSnapshot> snaps     = _renderSnapshots;
+            NativeArray<AnimRenderSnapshot> snaps = _renderSnapshots;
             NativeArray<Matrix4x4>          worldMats = _worldMatrixCache;
             int snapLen    = snaps.Length;
             int groupCount = _activeGroups.Count;
@@ -211,7 +219,7 @@ namespace WarField
                     _alphaBatch[batchCount]  = proxy.gs_alpha;
                     batchCount++;
 
-                    if (batchCount == 1023)
+                    if (batchCount == GD.MaxGPUInstances)
                     {
                         _mpb.Clear();
                         _mpb.SetFloatArray(_slicePropId, _sliceBatch);
@@ -351,6 +359,11 @@ namespace WarField
             if (_worldMatrixCache.IsCreated)   _worldMatrixCache.Dispose();
             if (_proxyTransformAccess.isCreated) _proxyTransformAccess.Dispose();
 
+            // 释放所有 Addressable 贴图句柄
+            foreach (var h in _addressableHandles)
+                if (h.IsValid()) Addressables.Release(h);
+            _addressableHandles.Clear();
+
             if (Instance == this) Instance = null;
         }
 
@@ -488,6 +501,17 @@ namespace WarField
             return default;
         }
 
+        // 根据 eleAnimId 返回烘焙时生成的八角 Mesh。
+        // AnimRenderProxy.InitProxy 用它替换 prefab 上的 Quad，减少透明区 Overdraw。
+        // 若该 eleAnimId 尚未通过 BindAnimWithEntity 注册，或对应烘焙数据里 p_bakedMesh 为空，则返回 null，
+        // 调用方应回退使用 prefab 自带的 MeshFilter.sharedMesh。
+        public Mesh GetBakedMesh(uint eleAnimId)
+        {
+            if (_bakedDataDict.TryGetValue(eleAnimId, out var data))
+                return data.p_bakedMesh;
+            return null;
+        }
+
         public Entity CreateAnimEntity(uint eleAnimId, GameObject gObj)
         {
             if (!_beInited) return Entity.Null;
@@ -539,10 +563,10 @@ namespace WarField
             if (_beInited == false)
                 return false;
 
-            var conf = _animConfig.GetElementData(entityName);
-            if (conf == null)
+            if (!_elementDataDict.TryGetValue(entityName, out var conf) || conf == null)
             {
-                GameLogger.LogError($"Fail to find the animation {entityName} in Blob asset");
+                GameLogger.LogError($"Fail to find the animation '{entityName}' in CharacterAnimConf.xml / Resources. " +
+                                    $"Please rebake the element and ensure it appears in Resources/Conf/CharacterAnimConf.xml.");
                 return false;
             }
 
@@ -637,6 +661,161 @@ namespace WarField
             _cmdBuffer = new NativeArray<AnimSyncCommand>(newCap, Allocator.Persistent);
         }
 
+        // ---------------------------------------------------------------
+        // CharacterAnimConf.xml 加载：在 Awake 阶段一次性读取所有元素的动画数据。
+        //
+        // XML 格式（Assets/Resources/Conf/CharacterAnimConf.xml）：
+        //   <anim>
+        //     <description>…（仅供备注，不解析）</description>
+        //     <name>Infantry</name>
+        //     <path>Animation/Soldiers/Human/Melee/Infantry</path>
+        //     <states>
+        //       <state name="IDLE" isLoop="true">
+        //         <variation index="0" frameCount="8" frameRate="1" eventFrame="-1" offsets="0,8,16,24,32,40,48,56"/>
+        //       </state>
+        //     </states>
+        //   </anim>
+        //
+        // Texture2DArray 位于 Assets/{path}/ 下；Mesh 在 Prefab 中手动赋值，此处不加载。
+        // 编辑器运行模式下通过 AssetDatabase 加载贴图；打包构建时需自行配置 Addressables。
+        // ---------------------------------------------------------------
+        private void LoadCharacterAnimConf()
+        {
+            _elementDataDict = new Dictionary<string, ElementAnimBakedData>();
+
+            TextAsset xmlAsset = Resources.Load<TextAsset>("Conf/CharacterAnimConf");
+            if (xmlAsset == null)
+            {
+                GameLogger.LogError("AnimCtrl: Resources/Conf/CharacterAnimConf.xml not found. " +
+                                    "Please run the Animation Baker tool to generate it.");
+                return;
+            }
+
+            XmlDocument doc = new XmlDocument();
+            doc.LoadXml(xmlAsset.text);
+
+            XmlNodeList animNodes = doc.SelectNodes("characterAnimCfgs/anim");
+            if (animNodes == null) return;
+
+            foreach (XmlNode node in animNodes)
+            {
+                if (node.NodeType == XmlNodeType.Comment) continue;
+
+                string name = node.SelectSingleNode("name")?.InnerText?.Trim();
+                string path = node.SelectSingleNode("path")?.InnerText?.Trim();
+                // <description> 不解析，仅供人工备注
+
+                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(path))
+                {
+                    GameLogger.LogWarning("AnimCtrl: CharacterAnimConf.xml has an <anim> entry missing <name> or <path>, skipped.");
+                    continue;
+                }
+
+                var data = LoadElementAnimData(name, path, node);
+                if (data != null)
+                    _elementDataDict[name] = data;
+            }
+
+            GameLogger.LogDebug($"AnimCtrl: Loaded {_elementDataDict.Count} element(s) from CharacterAnimConf.xml.");
+        }
+
+        // 从 XML <anim> 节点 + Addressables 加载单个元素的全部动画数据。
+        // path 是 XML <path> 字段的值（如 "Animation/Soldiers/Human/Melee/Infantry"）。
+        // Addressable 地址格式："{path}/{name}_{HD|MD|LD}_{Color|Normal}"，
+        // 与 Frame2TextureArray.cs 烘焙工具注册时使用的地址完全一致。
+        private ElementAnimBakedData LoadElementAnimData(string name, string path, XmlNode animNode)
+        {
+            var data = new ElementAnimBakedData { p_elementName = name };
+
+            // ---- Texture2DArray（HD / MD / LD）----
+            // 通过 Addressables 同步加载（WaitForCompletion 阻塞直到加载完成）。
+            // 句柄由 _addressableHandles 统一管理，在 OnDestroy 时释放。
+            data.p_hdColorArray  = LoadAddressable<Texture2DArray>($"{path}/{name}_HD_Color");
+            data.p_mdColorArray  = LoadAddressable<Texture2DArray>($"{path}/{name}_MD_Color");
+            data.p_ldColorArray  = LoadAddressable<Texture2DArray>($"{path}/{name}_LD_Color");
+            data.p_hdNormalArray = LoadAddressable<Texture2DArray>($"{path}/{name}_HD_Normal");
+            data.p_mdNormalArray = LoadAddressable<Texture2DArray>($"{path}/{name}_MD_Normal");
+            data.p_ldNormalArray = LoadAddressable<Texture2DArray>($"{path}/{name}_LD_Normal");
+
+            if (data.p_hdColorArray == null)
+                GameLogger.LogWarning($"AnimCtrl: Addressable '{path}/{name}_HD_Color' 未找到。" +
+                                      $"请重新烘焙或在 Addressables Groups 窗口检查注册状态。");
+
+            // ---- 八角 Mesh ----
+            // 通过 Addressables 加载烘焙工具生成的 OctagonMesh。
+            // AnimRenderProxy.InitProxy 检查 GetBakedMesh() 非 null 时会用它覆盖 MeshFilter.sharedMesh，
+            // 无需在 Prefab 中手动赋值；未烘焙或加载失败时自动回退到 prefab sharedMesh，行为不变。
+            data.p_bakedMesh = LoadAddressable<Mesh>($"{path}/{name}_OctagonMesh");
+
+            // ---- 动画状态数据（直接从 XML <states> 节点解析）----
+            data.p_stateAnim = ParseStatesFromXml(animNode?.SelectSingleNode("states"));
+
+            return data;
+        }
+
+        // 通过 Addressables 同步加载资产，失败时返回 null。
+        // 成功时将句柄存入 _addressableHandles，供 OnDestroy 统一释放。
+        private T LoadAddressable<T>(string address) where T : UnityEngine.Object
+        {
+            var handle = Addressables.LoadAssetAsync<T>(address);
+            T result = handle.WaitForCompletion();
+            if (handle.Status == AsyncOperationStatus.Succeeded)
+            {
+                _addressableHandles.Add(handle);
+                return result;
+            }
+            Addressables.Release(handle);
+            return null;
+        }
+
+        // 将 <states>/<state>/<variation> XML 节点树解析为 List<StateAnimData>。
+        private static List<StateAnimData> ParseStatesFromXml(XmlNode statesNode)
+        {
+            var result = new List<StateAnimData>();
+            if (statesNode == null) return result;
+
+            foreach (XmlNode stateNode in statesNode.ChildNodes)
+            {
+                if (stateNode.NodeType != XmlNodeType.Element) continue;
+
+                string stateName = stateNode.Attributes?["name"]?.Value ?? "";
+                bool   isLoop    = string.Equals(stateNode.Attributes?["isLoop"]?.Value, "true",
+                                       System.StringComparison.OrdinalIgnoreCase);
+                var stateData = new StateAnimData { p_stateName = stateName, p_isLoop = isLoop };
+
+                foreach (XmlNode varNode in stateNode.ChildNodes)
+                {
+                    if (varNode.NodeType != XmlNodeType.Element) continue;
+
+                    int   frameCount = int.TryParse(varNode.Attributes?["frameCount"]?.Value, out int fc) ? fc : 0;
+                    float frameRate  = float.TryParse(varNode.Attributes?["frameRate"]?.Value,
+                                           System.Globalization.NumberStyles.Float,
+                                           System.Globalization.CultureInfo.InvariantCulture, out float fr) ? fr : 1f;
+                    int   eventFrame = int.TryParse(varNode.Attributes?["eventFrame"]?.Value, out int ef) ? ef : -1;
+                    string offsetsStr = varNode.Attributes?["offsets"]?.Value ?? "";
+
+                    var varData = new VariationAnimData
+                    {
+                        p_animFrameCount = frameCount,
+                        p_frameRate      = frameRate,
+                        p_eventFrame     = eventFrame
+                    };
+
+                    foreach (string part in offsetsStr.Split(','))
+                    {
+                        if (int.TryParse(part.Trim(), out int offset))
+                            varData.p_animStartOffset.Add(offset);
+                    }
+
+                    stateData.p_variations.Add(varData);
+                }
+
+                result.Add(stateData);
+            }
+
+            return result;
+        }
+
         private void ApplyGlobalMaterialLodSwitch(WE.LodLevel newLod)
         {
             int groupCount = _activeGroups.Count;
@@ -645,7 +824,8 @@ namespace WarField
                 RenderGroup group = _activeGroups[i];
                 if (group.p_sharedMaterial == null) continue;
 
-                if (!_bakedDataDict.TryGetValue(group.p_eleAnimId, out var data)) continue;
+                if (_bakedDataDict.TryGetValue(group.p_eleAnimId, out var data) == false)
+                    continue;
 
                 Texture2DArray targetColor  = data.p_hdColorArray;
                 Texture2DArray targetNormal = data.p_hdNormalArray;
@@ -666,8 +846,10 @@ namespace WarField
                         break;
                 }
 
-                if (targetColor  != null) group.p_sharedMaterial.SetTexture("_MainTexArray",   targetColor);
-                if (targetNormal != null) group.p_sharedMaterial.SetTexture("_NormalTexArray", targetNormal);
+                if (targetColor  != null)
+                    group.p_sharedMaterial.SetTexture("_MainTexArray",   targetColor);
+                if (targetNormal != null)
+                    group.p_sharedMaterial.SetTexture("_NormalTexArray", targetNormal);
             }
         }
 

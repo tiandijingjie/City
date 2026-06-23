@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Xml;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
@@ -24,8 +25,6 @@ namespace WarField
 #endregion
 
 #region private parameters
-        [SerializeField] private GlobalWeaponConfig _weaponConfig;
-
         // --- GameObject 对象池 ---
         private List<GameObject> _activeObjects;
         private List<Entity> _activeEntities;
@@ -146,18 +145,25 @@ namespace WarField
 
         // 发射单体子弹；p_maxHeight==0 为直线弹道，否则为抛物线弹道
         //casterGridIndex :发射者的gridIndex
-        public void FireBullet(
-            uint weaponId, WE.FactionType faction, float damage,
+        public bool FireBullet(
+            WD.WeaponId weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
             Vector2 startPos, Vector2 endPos, GameObject prefab)
         {
             if (_beInited == false)
-                return;
+                return false;
 
+            if (weaponId == WD.WeaponId.MIN)
+            {
+                GameLogger.LogError($"Invalid weaponId {weaponId}  {gameObject.name}");
+                return false;
+            }
+
+            uint wid = (uint)weaponId;
             WD.BlobWeaponElementData elementData;
-            if (TryGetWeaponElement(weaponId, out elementData) == false)
-                return;
+            if (TryGetWeaponElement(wid, out elementData) == false)
+                return false;
 
             Entity entity;
             if (elementData.p_maxHeight == 0f)
@@ -166,38 +172,47 @@ namespace WarField
                 float maxDistance = math.length(offset);
                 Vector2 direction = maxDistance > 0f ? offset / maxDistance : new float2(1f, 0f);
 
-                entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+                entity = CreateBaseProjectile(_linearArchetype, wid, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
                 BuildLinearMovement(entity, startPos, direction, elementData.p_speed, maxDistance);
             }
             else
             {
-                entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+                entity = CreateBaseProjectile(_bezierArchetype, wid, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
                 BuildBezierMovement(entity, startPos, endPos, elementData.p_maxHeight, elementData.p_speed);
             }
 
             AttachTarget(entity, targetEleType, targetGridIndex);
             _entityManager.AddComponentData(entity, new WD.SingleTargetComponent());
+
+            return true;
         }
 
         // 发射抛物线范围炮弹 (如：投石车、迫击炮)
         // damageRange:伤害范围
         // otherDamage:主目标之外其他目标的伤害
         // canAttackBuilding:是否允许伤害建筑
-        public void FireBezierShell(
-            uint weaponId, WE.FactionType faction, float damage,
+        public bool FireBezierShell(
+            WD.WeaponId weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             int targetEleType, int targetGridIndex, bool triggerSkill,
             Vector2 startPos, Vector2 endPos,
             float damageRange, float otherDamage, GameObject prefab, bool canAttackBuilding = true)
         {
             if (_beInited == false)
-                return;
+                return false;
 
+            if (weaponId == WD.WeaponId.MIN)
+            {
+                GameLogger.LogError($"Invalid weaponId {weaponId}  {gameObject.name}");
+                return false;
+            }
+
+            uint wid = (uint)weaponId;
             WD.BlobWeaponElementData elementData;
-            if (TryGetWeaponElement(weaponId, out elementData) == false)
-                return;
+            if (TryGetWeaponElement(wid, out elementData) == false)
+                return false;
 
-            Entity entity = CreateBaseProjectile(_bezierArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
+            Entity entity = CreateBaseProjectile(_bezierArchetype, wid, faction, damage, casterMapId, casterEleType, casterGridIndex, triggerSkill, prefab);
             BuildBezierMovement(entity, startPos, endPos, elementData.p_maxHeight, elementData.p_speed);
             AttachTarget(entity, targetEleType, targetGridIndex);
 
@@ -206,23 +221,31 @@ namespace WarField
             areaComp.p_otherDamage = otherDamage;
             areaComp.p_canAttackBuilding = canAttackBuilding;
             _entityManager.AddComponentData(entity, areaComp);
+            return true;
         }
 
         // 发射直线穿透技能 (如：风行者强力击、穿透激光)
-        public void FireLinearNoTarget(
-            uint weaponId, WE.FactionType faction, float damage,
+        public bool FireLinearNoTarget(
+            WD.WeaponId weaponId, WE.FactionType faction, float damage,
             int casterMapId, int casterEleType, int casterGridIndex,
             Vector2 startPos, Vector2 direction, float maxDistance,
             float colliderRadius, GameObject prefab) // 删除了 maxPierceCount
         {
             if (_beInited == false)
-                return;
+                return false;
 
+            if (weaponId == WD.WeaponId.MIN)
+            {
+                GameLogger.LogError($"Invalid weaponId {weaponId}  {gameObject.name}");
+                return false;
+            }
+
+            uint wid = (uint)weaponId;
             WD.BlobWeaponElementData elementData;
-            if (TryGetWeaponElement(weaponId, out elementData) == false)
-                return;
+            if (TryGetWeaponElement(wid, out elementData) == false)
+                return false;
 
-            Entity entity = CreateBaseProjectile(_linearArchetype, weaponId, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
+            Entity entity = CreateBaseProjectile(_linearArchetype, wid, faction, damage, casterMapId, casterEleType, casterGridIndex, false, prefab);
             BuildLinearMovement(entity, startPos, direction, elementData.p_speed, maxDistance);
 
             // 挂载判定范围组件
@@ -232,6 +255,7 @@ namespace WarField
 
             // 挂载动态记忆数组 (刚发射时是空的)
             _entityManager.AddBuffer<WD.HitRecordElement>(entity);
+            return true;
         }
 #endregion
 
@@ -240,35 +264,78 @@ namespace WarField
         {
             ShutdownWeaponBlob();
 
-            if (_weaponConfig == null || _weaponConfig.p_allElementsBakedList == null)
+            XmlDocument xmlDoc = Utils.LoadXmlFile("Conf/WeaponConf");
+            if (xmlDoc == null)
             {
-                GameLogger.LogError("WeaponCtrl: missing GlobalWeaponConfig");
+                GameLogger.LogError("WeaponCtrl: failed to load WeaponConf.xml");
                 return false;
             }
 
-            List<WD.ElementWeaponBakedData> srcList = _weaponConfig.p_allElementsBakedList;
-            var validList = new List<WD.ElementWeaponBakedData>(srcList.Count);
+            XmlNodeList weaponNodes = xmlDoc.SelectNodes("weaponCfgs/weapon");
+            if (weaponNodes == null || weaponNodes.Count == 0)
+            {
+                GameLogger.LogError("WeaponCtrl: WeaponConf.xml has no weapon entries");
+                return false;
+            }
+
+            var validList = new List<WD.ElementWeaponBakedData>(weaponNodes.Count);
             var seenIds = new HashSet<uint>();
 
-            for (int i = 0; i < srcList.Count; i++)
+            for (int i = 0; i < weaponNodes.Count; i++)
             {
-                WD.ElementWeaponBakedData src = srcList[i];
-                if (src == null || src.p_weaponId <= 0)
+                if (weaponNodes[i].NodeType == XmlNodeType.Comment)
                     continue;
 
-                uint weaponId = (uint)src.p_weaponId;
-                if (seenIds.Add(weaponId) == false)
+                XmlElement weaponElem = (XmlElement)weaponNodes[i];
+                WD.ElementWeaponBakedData data = new WD.ElementWeaponBakedData();
+
+                XmlNodeList children = weaponElem.ChildNodes;
+                for (int j = 0; j < children.Count; j++)
                 {
-                    GameLogger.LogError($"WeaponCtrl: duplicate weaponId={weaponId} in GlobalWeaponConfig");
+                    if (children[j].NodeType == XmlNodeType.Comment)
+                        continue;
+
+                    XmlElement child = (XmlElement)children[j];
+                    switch (child.Name) //description 字段不用解析,只是在xml中的一个说明, 代替comment
+                    {
+                        case "id":
+                            if (uint.TryParse(child.GetAttribute("value"), out uint rawId))
+                                data.p_weaponId = (WD.WeaponId)rawId;
+                            break;
+                        case "maxHeight":
+                            if (float.TryParse(child.GetAttribute("value"),
+                                    System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out float h))
+                                data.p_maxHeight = h;
+                            break;
+                        case "speed":
+                            if (float.TryParse(child.GetAttribute("value"),
+                                    System.Globalization.NumberStyles.Float,
+                                    System.Globalization.CultureInfo.InvariantCulture, out float s))
+                                data.p_speed = s;
+                            break;
+                    }
+                }
+
+                uint weaponId = (uint)data.p_weaponId;
+                if (weaponId == 0)
+                {
+                    GameLogger.LogError("WeaponCtrl: weapon with id=0 in WeaponConf.xml, skipping");
                     continue;
                 }
 
-                validList.Add(src);
+                if (seenIds.Add(weaponId) == false)
+                {
+                    GameLogger.LogError($"WeaponCtrl: duplicate weaponId={weaponId} in WeaponConf.xml");
+                    continue;
+                }
+
+                validList.Add(data);
             }
 
             if (validList.Count == 0)
             {
-                GameLogger.LogError("WeaponCtrl: GlobalWeaponConfig has no valid weapon entries");
+                GameLogger.LogError("WeaponCtrl: WeaponConf.xml has no valid weapon entries");
                 return false;
             }
 

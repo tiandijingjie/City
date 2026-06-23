@@ -14,6 +14,7 @@ public class GlobalDefines
     public static Vector2Int InvalidVector2Int = new Vector2Int(InvalidInt, InvalidInt);
     public static int HourOfDay = 8;
     public static float DoubleClickTimeInterval = 0.4f; //鼠标双击的最大时间间隔
+    public static int MaxGPUInstances = 1023; //GPU Instancing 每次最大绘制数量, DrawMeshInstanced 硬限制
 
     public static readonly Dictionary<DirDef, Vector2> DirVector = new Dictionary<DirDef, Vector2>()
     {

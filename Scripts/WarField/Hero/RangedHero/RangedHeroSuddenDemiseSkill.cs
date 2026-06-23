@@ -11,6 +11,7 @@ namespace WarField
     using SD = SoldierDefines;
     using WE = WarFieldElements;
     using ED = EffectDefines;
+    using WD = WeaponDefines;
 
     //随机击杀技能范围内多个血量低于阈值的敌人,不包括英雄
     // 技能距离:20
@@ -37,7 +38,7 @@ namespace WarField
         private RangedHero _rangedHero;
 
         private GameObject _arrowPfb;
-        [SerializeField] private uint _arrowId;
+        [SerializeField] private WD.WeaponId _arrowId;
 #endregion
 
 #region private parameters' get set

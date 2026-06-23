@@ -153,6 +153,18 @@ namespace WarField
             return true;
         }
 
+        //计算如果按照次数来执行异步search,在searcher中p_duration需要填入的数值
+        public float GetTimeForASyncSearchCnt(uint cnt)
+        {
+            if (cnt == 0) //cnt 不应该为0
+            {
+                GameLogger.LogError($"Can not handle cnt == 0");
+                return 0;
+            }
+
+            return (cnt - 1) * _searchTickRate + _searchTickRate / 2;
+        }
+
         // 注册查找器。如果 duration == 0，会立刻在主线程同步结算并触发回调。
         public void RegisterSearch(SearchBase searcher)
         {
@@ -393,10 +405,11 @@ namespace WarField
                 {
                     for (int i = closestList.Count - 1; i >= 0; i--)
                     {
-                        if (!UpdateSearcherDuration(closestList[i], _searchTickRate))
-                            closestList.RemoveAt(i);
-                        else if (closestList[i].p_isEnabled == true && closestList[i].p_conditions.Count > 0) //查询必须要有查询条件
+                        if (closestList[i].p_isEnabled == true && closestList[i].p_conditions.Count > 0) //查询必须要有查询条件
                             _mapClosests.Add(closestList[i]);
+
+                        if (UpdateSearcherDuration(closestList[i], _searchTickRate) == false) //超时移除
+                            closestList.RemoveAt(i);
                     }
                 }
 
@@ -404,10 +417,11 @@ namespace WarField
                 {
                     for (int i = areaList.Count - 1; i >= 0; i--)
                     {
-                        if (!UpdateSearcherDuration(areaList[i], _searchTickRate))
-                            areaList.RemoveAt(i);
-                        else if (areaList[i].p_isEnabled == true && areaList[i].p_conditions.Count > 0) //查询必须要有查询条件
+                        if (areaList[i].p_isEnabled == true && areaList[i].p_conditions.Count > 0) //查询必须要有查询条件
                             _mapAreas.Add(areaList[i]);
+
+                        if (UpdateSearcherDuration(areaList[i], _searchTickRate) == false) //超时移除
+                            areaList.RemoveAt(i);
                     }
                 }
 
